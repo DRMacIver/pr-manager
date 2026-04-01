@@ -296,9 +296,10 @@ async def git_setup_worktree(repo_path: Path, worktree_path: Path, branch: str) 
     )
 
 
-async def git_commits_behind_main(worktree_path: Path) -> int:
+async def git_commits_behind_main(worktree_path: Path, branch: str) -> int:
+    """Check how far the *remote* PR branch is behind origin/main."""
     rc, out, _ = await run_cmd(
-        ["git", "rev-list", "--count", "HEAD..origin/main"],
+        ["git", "rev-list", "--count", f"origin/{branch}..origin/main"],
         cwd=worktree_path, check=False,
     )
     if rc != 0:
@@ -488,7 +489,7 @@ class PRProcessor:
                 return
 
             # 2. Rebase if behind main.
-            behind = await git_commits_behind_main(worktree_path)
+            behind = await git_commits_behind_main(worktree_path, branch)
             if behind > 0:
                 self._log_cb(
                     f"PR #{pr_number} is {behind} commit(s) behind main — rebasing", "info"
