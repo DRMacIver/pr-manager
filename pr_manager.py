@@ -483,7 +483,6 @@ class PRProcessor:
             log_path = get_log_path(self._repo, pr_number)
 
             self._log_cb(f"Checking PR #{pr_number} ({self._repo}/{branch})", "info")
-            await git_clone_or_fetch(self._repo, repo_path)
             await git_setup_worktree(repo_path, worktree_path, branch)
 
             # Re-read after potential worktree setup writes.
@@ -742,6 +741,15 @@ async def poll_loop(
                     except Exception as e:
                         app.post_message(AppLogMessage(
                             f"Failed to list PRs for {repo}: {e}", "error"
+                        ))
+                        continue
+
+                    # Fetch once per repo before processing any PRs.
+                    try:
+                        await git_clone_or_fetch(repo, get_repo_path(repo))
+                    except Exception as e:
+                        app.post_message(AppLogMessage(
+                            f"Failed to fetch {repo}: {e}", "error"
                         ))
                         continue
 
