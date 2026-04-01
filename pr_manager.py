@@ -900,6 +900,7 @@ class PRManagerApp(App):
     """
 
     BINDINGS = [
+        Binding("b", "open_browser", "browser"),
         Binding("o", "open_terminal", "terminal"),
         Binding("v", "view_agent", "view agent"),
         Binding("c", "open_claude_session", "claude session"),
@@ -1024,6 +1025,14 @@ class PRManagerApp(App):
             ))
             return False
         return True
+
+    async def action_open_browser(self) -> None:
+        pr = self._get_selected_pr()
+        if not pr:
+            self.post_message(AppLogMessage("No PR selected", "warn"))
+            return
+        url = f"https://github.com/{pr.repo}/pull/{pr.number}"
+        await run_cmd(["open", url], check=False)
 
     async def action_open_terminal(self) -> None:
         if not self._check_tmux():
