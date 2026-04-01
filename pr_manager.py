@@ -223,7 +223,7 @@ async def run_cmd(
 async def gh_list_prs(repo: str) -> list[dict]:
     _, out, _ = await run_cmd([
         "gh", "pr", "list", "--repo", repo, "--state", "open",
-        "--json", "number,title,headRefName,headSha,createdAt",
+        "--json", "number,title,headRefName,headRefOid,createdAt",
     ])
     return json.loads(out) if out else []
 
