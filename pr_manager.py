@@ -28,6 +28,9 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
     query,
 )
 from rich.text import Text
@@ -407,10 +410,21 @@ class AgentRunner:
 
                     elif isinstance(message, AssistantMessage):
                         for block in message.content:
+                            ts = datetime.now().strftime("%H:%M:%S")
                             if isinstance(block, TextBlock):
-                                ts = datetime.now().strftime("%H:%M:%S")
                                 for line in block.text.splitlines():
                                     log_f.write(f"[{ts}] {line}\n")
+                            elif isinstance(block, ToolUseBlock):
+                                log_f.write(f"[{ts}] >>> {block.name}({json.dumps(block.input, default=str)[:200]})\n")
+
+                    elif isinstance(message, UserMessage):
+                        for block in (message.content if isinstance(message.content, list) else []):
+                            if isinstance(block, ToolResultBlock):
+                                ts = datetime.now().strftime("%H:%M:%S")
+                                err = " [ERROR]" if block.is_error else ""
+                                content = str(block.content)[:500] if block.content else ""
+                                for line in content.splitlines():
+                                    log_f.write(f"[{ts}] <<< {line}{err}\n")
 
                     elif isinstance(message, ResultMessage):
                         found_done = bool(message.result and "DONE" in message.result.upper())
