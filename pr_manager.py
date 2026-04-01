@@ -582,11 +582,11 @@ class PRProcessor:
                     await self._state_manager.get_pr_state(self._repo, str(pr_number))
                     or pr_state
                 )
-                pr_state.status = "idle"
+                pr_state.status = "pending"
                 pr_state.error_message = None
                 await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
-                self._status_cb(self._repo, pr_number, "idle", None)
-                self._log_cb(f"PR #{pr_number} rebased and pushed ✓", "info")
+                self._status_cb(self._repo, pr_number, "pending", None)
+                self._log_cb(f"PR #{pr_number} rebased and pushed ✓ — waiting for checks", "info")
             else:
                 self._set_error(pr_state, pr_number, "Push rejected (force-with-lease failed)")
         else:
@@ -631,10 +631,10 @@ class PRProcessor:
                 await self._state_manager.get_pr_state(self._repo, str(pr_number))
                 or pr_state
             )
-            pr_state.status = "idle"
+            pr_state.status = "pending"
             pr_state.error_message = None
             await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
-            self._status_cb(self._repo, pr_number, "idle", None)
+            self._status_cb(self._repo, pr_number, "pending", None)
         else:
             self._set_error(pr_state, pr_number, "CI fix agent did not complete (check log with [v])")
 
