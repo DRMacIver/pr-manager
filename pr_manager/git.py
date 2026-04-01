@@ -53,16 +53,20 @@ async def gh_list_prs(repo: str) -> list[dict]:
 
 
 async def gh_pr_check_status(repo: str, pr_number: int) -> tuple[str, str]:
-    """Return ("green" | "pending" | "failing", failure_details_str)."""
-    rc, out, _ = await run_cmd([
+    """Return ("green" | "pending" | "failing" | "no_checks", details)."""
+    rc, out, stderr = await run_cmd([
         "gh", "pr", "checks", str(pr_number), "--repo", repo,
         "--json", "name,state",
     ], check=False)
-    if rc != 0 or not out:
+    if rc != 0:
+        if "no checks reported" in (stderr or "").lower() or "no checks reported" in (out or "").lower():
+            return "no_checks", ""
         return "pending", ""
+    if not out:
+        return "no_checks", ""
     checks = json.loads(out)
     if not checks:
-        return "green", ""
+        return "no_checks", ""
     failures = [c for c in checks if c.get("state") == "FAILURE"]
     if failures:
         details = "\n".join(f"- {c['name']}: {c['state']}" for c in failures)
@@ -140,6 +144,39 @@ async def git_get_new_commits_since(worktree_path: Path, old_sha: str) -> list[s
         cwd=worktree_path, check=False,
     )
     return [s.strip() for s in out.splitlines() if s.strip()]
+
+
+async def git_latest_commit_is_bot(repo: str, branch: str) -> bool:
+    """Check if the latest commit on the remote branch was authored by a bot."""
+    owner, name = repo.split("/", 1)
+    rc, out, _ = await run_cmd([
+        "gh", "api",
+        f"repos/{owner}/{name}/commits/{branch}",
+        "--jq", ".commit.author.email",
+    ], check=False)
+    if rc != 0 or not out:
+        return False
+    email = out.strip()
+    return "[bot]" in email or email.endswith("@users.noreply.github.com") and "bot" in email
+
+
+async def git_reattribute_and_push(worktree_path: Path, branch: str) -> bool:
+    """Pull the latest remote commit, reattribute it to the local user, and push."""
+    # Update worktree to match remote.
+    rc, _, _ = await run_cmd(
+        ["git", "reset", "--hard", f"origin/{branch}"],
+        cwd=worktree_path, check=False,
+    )
+    if rc != 0:
+        return False
+    # Amend the commit to use the local user's identity, triggering a new SHA.
+    rc, _, _ = await run_cmd(
+        ["git", "commit", "--amend", "--no-edit", "--reset-author"],
+        cwd=worktree_path, check=False,
+    )
+    if rc != 0:
+        return False
+    return await git_push_force_with_lease(worktree_path, branch)
 
 
 async def git_push_force_with_lease(worktree_path: Path, branch: str) -> bool:

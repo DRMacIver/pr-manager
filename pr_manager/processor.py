@@ -15,7 +15,9 @@ from .git import (
     git_commits_behind_main,
     git_get_current_sha,
     git_get_new_commits_since,
+    git_latest_commit_is_bot,
     git_push_force_with_lease,
+    git_reattribute_and_push,
     git_setup_worktree,
 )
 from .state import PRState, StateManager
@@ -78,8 +80,37 @@ class PRProcessor:
                 await self._do_rebase(pr_number, branch, worktree_path, pr_state, log_path)
                 return
 
-            # 3. Fix CI if failing, or mark pending.
+            # 3. Check CI status.
             check_status, failures = await gh_pr_check_status(self._repo, pr_number)
+
+            # 3a. No checks at all — likely a bot push that can't trigger Actions.
+            if check_status == "no_checks":
+                if await git_latest_commit_is_bot(self._repo, branch):
+                    self._log_cb(
+                        f"PR #{pr_number} has no checks (bot push) — reattributing commit", "info"
+                    )
+                    pushed = await git_reattribute_and_push(worktree_path, branch)
+                    if pushed:
+                        old_sha = await git_get_current_sha(worktree_path)
+                        await self._state_manager.record_our_commits(
+                            self._repo, str(pr_number), [old_sha]
+                        )
+                        pr_state.status = "pending"
+                        pr_state.error_message = None
+                        await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
+                        self._status_cb(self._repo, pr_number, "pending", None)
+                        self._log_cb(f"PR #{pr_number} reattributed and pushed ✓ — waiting for checks", "info")
+                    else:
+                        self._set_error(pr_state, pr_number, "Failed to reattribute bot commit")
+                    return
+                # No checks and not a bot — treat as pending (checks may not exist yet).
+                pr_state.status = "pending"
+                pr_state.error_message = None
+                await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
+                self._status_cb(self._repo, pr_number, "pending", None)
+                self._log_cb(f"PR #{pr_number} ({self._repo}) no checks reported yet", "info")
+                return
+
             if check_status == "failing":
                 self._log_cb(f"PR #{pr_number} has failing checks — fixing CI", "info")
                 await self._do_ci_fix(pr_number, branch, worktree_path, pr_state, log_path, failures)
