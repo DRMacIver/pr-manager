@@ -56,6 +56,7 @@ SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 # (icon, rich style) per status
 STATUS_STYLE: dict[str, tuple[str, str]] = {
     "idle":          ("○", "dim"),
+    "pending":       ("◌", "cyan"),
     "rebasing":      ("◉", "yellow"),
     "fixing_ci":     ("◉", "yellow"),
     "green":         ("✓", "green"),
@@ -511,11 +512,18 @@ class PRProcessor:
                 await self._do_rebase(pr_number, branch, worktree_path, pr_state, log_path)
                 return
 
-            # 3. Fix CI if failing.
+            # 3. Fix CI if failing, or mark pending.
             check_status, failures = await gh_pr_check_status(self._repo, pr_number)
             if check_status == "failing":
                 self._log_cb(f"PR #{pr_number} has failing checks — fixing CI", "info")
                 await self._do_ci_fix(pr_number, branch, worktree_path, pr_state, log_path, failures)
+                return
+            if check_status == "pending":
+                pr_state.status = "pending"
+                pr_state.error_message = None
+                await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
+                self._status_cb(self._repo, pr_number, "pending", None)
+                self._log_cb(f"PR #{pr_number} ({self._repo}) checks still running", "info")
                 return
 
             # 4. All good.
