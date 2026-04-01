@@ -274,7 +274,7 @@ async def git_clone_or_fetch(repo: str, local_path: Path) -> None:
     else:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         await run_cmd([
-            "git", "clone", f"https://github.com/{repo}.git", str(local_path),
+            "git", "clone", f"git@github.com:{repo}.git", str(local_path),
         ])
 
 
