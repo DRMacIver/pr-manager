@@ -742,6 +742,21 @@ async def poll_loop(
                                 f"Removed PR #{old_num} ({repo}) from state", "info"
                             ))
 
+                    # Ensure all known PRs have at least stub state so they
+                    # appear in the display before processing starts.
+                    for pr_data in prs:
+                        pn = str(pr_data["number"])
+                        if await state_manager.get_pr_state(repo, pn) is None:
+                            await state_manager.upsert_pr_state(repo, pn, PRState(
+                                title=pr_data.get("title", ""),
+                                branch=pr_data["headRefName"],
+                                created_at=pr_data.get("createdAt", ""),
+                            ))
+
+                    # Push an updated display list now so PRs appear immediately.
+                    _repos = await state_manager.get_repos()
+                    app.post_message(PrListUpdate(await build_display_list(_repos, state_manager)))
+
                     for pr_data in prs:
                         pr_number: int = pr_data["number"]
                         key = (repo, pr_number)
@@ -977,7 +992,18 @@ class PRManagerApp(App):
 
     # ── Key actions ───────────────────────────────────────────────────────────
 
+    def _check_tmux(self) -> bool:
+        if not os.environ.get("TMUX"):
+            self.post_message(AppLogMessage(
+                "Not inside a tmux session — run pr-manager inside tmux to use window actions",
+                "warn",
+            ))
+            return False
+        return True
+
     async def action_open_terminal(self) -> None:
+        if not self._check_tmux():
+            return
         pr = self._get_selected_pr()
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
@@ -995,6 +1021,8 @@ class PRManagerApp(App):
         self.post_message(AppLogMessage(f"Opened terminal for PR #{pr.number}", "info"))
 
     async def action_view_agent(self) -> None:
+        if not self._check_tmux():
+            return
         pr = self._get_selected_pr()
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
@@ -1015,6 +1043,8 @@ class PRManagerApp(App):
         ))
 
     async def action_open_claude_session(self) -> None:
+        if not self._check_tmux():
+            return
         pr = self._get_selected_pr()
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
