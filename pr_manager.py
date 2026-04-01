@@ -222,7 +222,7 @@ async def run_cmd(
 
 async def gh_list_prs(repo: str) -> list[dict]:
     _, out, _ = await run_cmd([
-        "gh", "pr", "list", "--repo", repo, "--state", "open",
+        "gh", "pr", "list", "--repo", repo, "--state", "open", "--author", "@me",
         "--json", "number,title,headRefName,headRefOid,createdAt",
     ])
     return json.loads(out) if out else []
@@ -269,7 +269,9 @@ async def gh_get_recent_commits(repo: str, branch: str, since_iso: str) -> list[
 
 
 async def git_clone_or_fetch(repo: str, local_path: Path) -> None:
+    ssh_url = f"git@github.com:{repo}.git"
     if (local_path / ".git").exists():
+        await run_cmd(["git", "remote", "set-url", "origin", ssh_url], cwd=local_path)
         await run_cmd(["git", "fetch", "origin", "--prune"], cwd=local_path)
     else:
         local_path.parent.mkdir(parents=True, exist_ok=True)
