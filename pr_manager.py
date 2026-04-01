@@ -237,23 +237,19 @@ async def gh_pr_check_status(repo: str, pr_number: int) -> tuple[str, str]:
     """Return ("green" | "pending" | "failing", failure_details_str)."""
     rc, out, _ = await run_cmd([
         "gh", "pr", "checks", str(pr_number), "--repo", repo,
-        "--json", "name,state,conclusion",
+        "--json", "name,state",
     ], check=False)
     if rc != 0 or not out:
         return "pending", ""
     checks = json.loads(out)
     if not checks:
         return "green", ""
-    failures = [
-        c for c in checks
-        if c.get("state") in ("fail", "startup_failure")
-        or c.get("conclusion") in ("failure", "timed_out", "action_required")
-    ]
+    failures = [c for c in checks if c.get("state") == "FAILURE"]
     if failures:
-        details = "\n".join(f"- {c['name']}: {c.get('state') or c.get('conclusion')}" for c in failures)
+        details = "\n".join(f"- {c['name']}: {c['state']}" for c in failures)
         return "failing", details
-    pending = [c for c in checks if c.get("state") == "pending" or c.get("conclusion") is None]
-    if pending:
+    in_progress = [c for c in checks if c.get("state") in ("IN_PROGRESS", "QUEUED", "PENDING", "WAITING")]
+    if in_progress:
         return "pending", ""
     return "green", ""
 
