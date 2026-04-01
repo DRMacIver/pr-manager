@@ -725,6 +725,23 @@ async def poll_loop(
                         ))
                         continue
 
+                    # Remove state + worktrees for PRs no longer in the list
+                    # (covers other people's PRs fetched before --author @me,
+                    # and PRs that have been closed/merged since last poll).
+                    current_numbers = {str(p["number"]) for p in prs}
+                    for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
+                        if old_num not in current_numbers:
+                            wt = get_worktree_path(repo, int(old_num))
+                            if wt.exists():
+                                await run_cmd(
+                                    ["git", "worktree", "remove", "--force", str(wt)],
+                                    cwd=get_repo_path(repo), check=False,
+                                )
+                            await state_manager.remove_pr(repo, old_num)
+                            app.post_message(AppLogMessage(
+                                f"Removed PR #{old_num} ({repo}) from state", "info"
+                            ))
+
                     for pr_data in prs:
                         pr_number: int = pr_data["number"]
                         key = (repo, pr_number)
