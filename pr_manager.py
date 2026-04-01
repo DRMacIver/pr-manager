@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1123,6 +1124,8 @@ def main() -> None:
     state_manager = StateManager()
 
     if args.command == "run":
+        if not os.environ.get("TMUX"):
+            os.execvp("tmux", ["tmux", "new-session", "-s", "pr-manager", "--"] + sys.argv)
         asyncio.run(state_manager.load())
         PRManagerApp(state_manager, args.poll_interval, args.recent_minutes).run()
 
