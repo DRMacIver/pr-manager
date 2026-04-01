@@ -14,10 +14,10 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 
-from .constants import SPINNER_CHARS, STATUS_STYLE
+from .constants import STATUS_STYLE, SPINNER_CHARS
 from .git import get_log_path, get_worktree_path, run_cmd
 from .poll import poll_loop
-from .state import PRDisplayInfo, StateManager
+from .state import PRDisplayInfo, PRState, StateManager
 
 
 # ── Textual messages ─────────────────────────────────────────────────────────
@@ -95,6 +95,87 @@ class AddRepoScreen(ModalScreen):
             self.dismiss()
 
 
+# ── PR detail modal ──────────────────────────────────────────────────────────
+
+class PRDetailScreen(ModalScreen):
+    DEFAULT_CSS = """
+    PRDetailScreen {
+        align: center middle;
+    }
+    #detail-dialog {
+        padding: 1 2;
+        width: 90%;
+        height: 80%;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    #detail-header {
+        height: auto;
+        margin-bottom: 1;
+    }
+    #detail-log {
+        height: 1fr;
+        border-top: solid $primary-darken-2;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "close"),
+        Binding("r", "refresh", "refresh"),
+    ]
+
+    def __init__(self, pr: PRDisplayInfo, pr_state: Optional[PRState]) -> None:
+        super().__init__()
+        self._pr = pr
+        self._pr_state = pr_state
+
+    def compose(self) -> ComposeResult:
+        pr = self._pr
+        st = self._pr_state
+        icon, _ = STATUS_STYLE.get(pr.status, ("?", ""))
+
+        with Vertical(id="detail-dialog"):
+            from textual.widgets import Static
+            lines = [
+                f"PR #{pr.number} — {pr.title}",
+                f"Repo: {pr.repo}  Branch: {pr.branch}  Age: {pr.age}",
+                f"Status: {icon} {pr.status}",
+            ]
+            if pr.error_message:
+                lines.append(f"Error: {pr.error_message}")
+            if st:
+                lines.append(f"Session: {st.session_id or 'none'}")
+                lines.append(f"Our commits: {len(st.our_commits)}")
+                lines.append(f"Last checked: {st.last_checked or 'never'}")
+            yield Static("\n".join(lines), id="detail-header")
+            yield RichLog(id="detail-log", highlight=True, markup=True)
+
+    def on_mount(self) -> None:
+        self._load_log()
+
+    def _load_log(self) -> None:
+        log_widget = self.query_one("#detail-log", RichLog)
+        log_widget.clear()
+        log_path = get_log_path(self._pr.repo, self._pr.number)
+        if log_path.exists():
+            text = log_path.read_text()
+            # Show last 200 lines
+            lines = text.splitlines()
+            if len(lines) > 200:
+                log_widget.write(f"[dim]... ({len(lines) - 200} earlier lines omitted) ...[/dim]")
+                lines = lines[-200:]
+            for line in lines:
+                log_widget.write(line)
+        else:
+            log_widget.write("[dim]No agent log yet.[/dim]")
+
+    def action_refresh(self) -> None:
+        self._load_log()
+
+    async def action_dismiss(self, result=None) -> None:
+        self.dismiss()
+
+
 # ── TUI app adapter ─────────────────────────────────────────────────────────
 # Bridges the PollHost protocol to Textual messages.
 
@@ -133,6 +214,7 @@ class PRManagerApp(App):
 
     BINDINGS = [
         Binding("b", "open_browser", "browser"),
+        Binding("d", "detail", "detail"),
         Binding("o", "open_terminal", "terminal"),
         Binding("v", "view_agent", "view agent"),
         Binding("c", "open_claude_session", "claude session"),
@@ -255,6 +337,14 @@ class PRManagerApp(App):
             ))
             return False
         return True
+
+    async def action_detail(self) -> None:
+        pr = self._get_selected_pr()
+        if not pr:
+            self.post_message(AppLogMessage("No PR selected", "warn"))
+            return
+        pr_state = await self._state_manager.get_pr_state(pr.repo, str(pr.number))
+        await self.push_screen(PRDetailScreen(pr, pr_state))
 
     async def action_open_browser(self) -> None:
         pr = self._get_selected_pr()
