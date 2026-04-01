@@ -1125,7 +1125,11 @@ def main() -> None:
 
     if args.command == "run":
         if not os.environ.get("TMUX"):
-            os.execvp("tmux", ["tmux", "new-session", "-s", "pr-manager", "--"] + sys.argv)
+            script = os.path.abspath(__file__)
+            os.execvp("tmux", [
+                "tmux", "new-session", "-s", "pr-manager", "--",
+                "uv", "run", script,
+            ] + sys.argv[1:])
         asyncio.run(state_manager.load())
         PRManagerApp(state_manager, args.poll_interval, args.recent_minutes).run()
 
