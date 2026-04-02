@@ -6,21 +6,18 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .agent import AgentRunner
-from .container import (
-    container_git_commits_behind_main,
-    container_git_get_current_sha,
-    container_git_get_new_commits_since,
-    container_git_push_force_with_lease,
-    container_git_reattribute_and_push,
-    container_name_for,
-    start_container,
-    wait_for_ready,
-)
 from .git import (
+    get_clone_path,
     get_log_path,
     gh_get_recent_commits,
     gh_pr_check_status,
+    git_commits_behind_main,
+    git_get_current_sha,
+    git_get_new_commits_since,
     git_latest_commit_is_bot,
+    git_push_force_with_lease,
+    git_reattribute_and_push,
+    git_setup_pr_clone,
 )
 from .state import PRState, StateManager
 
@@ -58,14 +55,16 @@ class PRProcessor:
             reviews = self._pr_data.get("reviews", [])
             pr_state.comment_count = len(comments) + len(reviews)
             pr_state.review_count = len(reviews)
+            # Latest activity: most recent comment or review timestamp.
             timestamps = [c.get("createdAt", "") for c in comments] + [r.get("submittedAt", "") for r in reviews]
             pr_state.latest_activity = max(timestamps) if timestamps else None
             await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
 
+            clone_path = get_clone_path(self._repo, pr_number)
             log_path = get_log_path(self._repo, pr_number)
-            identifier = str(pr_number)
 
             self._log_cb(f"Checking PR #{pr_number} ({self._repo}/{branch})", "info")
+            await git_setup_pr_clone(self._repo, pr_number, branch)
 
             pr_state = await self._state_manager.get_pr_state(self._repo, str(pr_number)) or PRState(
                 title=title, branch=branch, created_at=created_at,
@@ -79,34 +78,27 @@ class PRProcessor:
                 self._status_cb(self._repo, pr_number, "human_changes", None)
                 return
 
-            # 2. Rebase if behind main — check via GitHub API (no container needed).
-            # We use the host gh CLI for status checks; only start containers for actual work.
-            check_status, failures = await gh_pr_check_status(self._repo, pr_number)
-
-            # For behind-main check, we need the container's git.
-            # Start container only when we need to do work.
-            container_name = container_name_for(self._repo, identifier)
-
-            # 2a. Check if behind main — start container to check.
-            cname = await self._ensure_container(identifier, branch)
-            behind = await container_git_commits_behind_main(cname, branch)
+            # 2. Rebase if behind main.
+            behind = await git_commits_behind_main(clone_path, branch)
             if behind > 0:
                 self._log_cb(
                     f"PR #{pr_number} is {behind} commit(s) behind main — rebasing", "info"
                 )
-                await self._do_rebase(pr_number, branch, cname, pr_state, log_path)
+                await self._do_rebase(pr_number, branch, clone_path, pr_state, log_path)
                 return
 
             # 3. Check CI status.
+            check_status, failures = await gh_pr_check_status(self._repo, pr_number)
+
             # 3a. No checks at all — likely a bot push that can't trigger Actions.
             if check_status == "no_checks":
                 if await git_latest_commit_is_bot(self._repo, branch):
                     self._log_cb(
                         f"PR #{pr_number} has no checks (bot push) — reattributing commit", "info"
                     )
-                    pushed = await container_git_reattribute_and_push(cname, branch)
+                    pushed = await git_reattribute_and_push(clone_path, branch)
                     if pushed:
-                        old_sha = await container_git_get_current_sha(cname)
+                        old_sha = await git_get_current_sha(clone_path)
                         await self._state_manager.record_our_commits(
                             self._repo, str(pr_number), [old_sha]
                         )
@@ -118,6 +110,7 @@ class PRProcessor:
                     else:
                         self._set_error(pr_state, pr_number, "Failed to reattribute bot commit")
                     return
+                # No checks and not a bot — treat as pending (checks may not exist yet).
                 pr_state.status = "pending"
                 pr_state.error_message = None
                 await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
@@ -127,7 +120,7 @@ class PRProcessor:
 
             if check_status == "failing":
                 self._log_cb(f"PR #{pr_number} has failing checks — fixing CI", "info")
-                await self._do_ci_fix(pr_number, branch, cname, pr_state, log_path, failures)
+                await self._do_ci_fix(pr_number, branch, clone_path, pr_state, log_path, failures)
                 return
             if check_status == "pending":
                 pr_state.status = "pending"
@@ -157,11 +150,6 @@ class PRProcessor:
             except Exception:
                 pass
 
-    async def _ensure_container(self, identifier: str, branch: str) -> str:
-        cname = await start_container(self._repo, identifier, branch)
-        await wait_for_ready(self._repo, identifier)
-        return cname
-
     async def _has_human_changes(
         self, branch: str, pr_state: PRState, recent_minutes: int
     ) -> bool:
@@ -176,7 +164,7 @@ class PRProcessor:
         self,
         pr_number: int,
         branch: str,
-        container_name: str,
+        clone_path: Path,
         pr_state: PRState,
         log_path: Path,
     ) -> None:
@@ -185,16 +173,16 @@ class PRProcessor:
         await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
         self._status_cb(self._repo, pr_number, "rebasing", None)
 
-        old_sha = await container_git_get_current_sha(container_name)
+        old_sha = await git_get_current_sha(clone_path)
         runner = AgentRunner(
-            self._repo, pr_number, branch, container_name, self._state_manager, log_path
+            self._repo, pr_number, branch, clone_path, self._state_manager, log_path
         )
         success = await runner.run_rebase()
 
         if success:
-            pushed = await container_git_push_force_with_lease(container_name, branch)
+            pushed = await git_push_force_with_lease(clone_path, branch)
             if pushed:
-                new_commits = await container_git_get_new_commits_since(container_name, old_sha)
+                new_commits = await git_get_new_commits_since(clone_path, old_sha)
                 await self._state_manager.record_our_commits(
                     self._repo, str(pr_number), new_commits
                 )
@@ -216,7 +204,7 @@ class PRProcessor:
         self,
         pr_number: int,
         branch: str,
-        container_name: str,
+        clone_path: Path,
         pr_state: PRState,
         log_path: Path,
         failures: str,
@@ -226,20 +214,20 @@ class PRProcessor:
         await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
         self._status_cb(self._repo, pr_number, "fixing_ci", None)
 
-        old_sha = await container_git_get_current_sha(container_name)
+        old_sha = await git_get_current_sha(clone_path)
         runner = AgentRunner(
-            self._repo, pr_number, branch, container_name, self._state_manager, log_path
+            self._repo, pr_number, branch, clone_path, self._state_manager, log_path
         )
         success = await runner.run_ci_fix(failures)
 
         if success:
-            new_sha = await container_git_get_current_sha(container_name)
+            new_sha = await git_get_current_sha(clone_path)
             if new_sha != old_sha:
-                pushed = await container_git_push_force_with_lease(container_name, branch)
+                pushed = await git_push_force_with_lease(clone_path, branch)
                 if not pushed:
                     self._set_error(pr_state, pr_number, "Push rejected after CI fix")
                     return
-                new_commits = await container_git_get_new_commits_since(container_name, old_sha)
+                new_commits = await git_get_new_commits_since(clone_path, old_sha)
                 await self._state_manager.record_our_commits(
                     self._repo, str(pr_number), new_commits
                 )

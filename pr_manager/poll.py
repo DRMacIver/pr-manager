@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Callable, Optional, Protocol
 
-from .container import ensure_image_built, remove_container, idle_shutdown_sweep
 from .git import (
+    get_clone_path,
     gh_list_prs,
     git_update_pristine,
+    remove_clone,
 )
 from .processor import PRProcessor
 from .state import PRDisplayInfo, PRState, StateManager
@@ -22,27 +22,12 @@ class PollHost(Protocol):
     def on_pr_list(self, prs: list[PRDisplayInfo]) -> None: ...
 
 
-def _project_root() -> Path:
-    """Return the directory containing the Dockerfile."""
-    return Path(__file__).resolve().parent.parent
-
-
 async def poll_loop(
     host: PollHost,
     state_manager: StateManager,
     poll_interval_minutes: int,
     recent_minutes: int,
 ) -> None:
-    # Build Docker image once at startup — fatal if it fails.
-    host.on_log("Checking Docker image...", "info")
-    try:
-        await ensure_image_built(_project_root())
-    except Exception as e:
-        host.on_log(f"FATAL: Failed to build Docker image: {e}", "error")
-        host.on_log("Cannot continue without Docker image. Fix the Dockerfile and restart.", "error")
-        return
-    host.on_log("Docker image ready.", "info")
-
     while True:
         try:
             repos = await state_manager.get_repos()
@@ -65,11 +50,11 @@ async def poll_loop(
                         host.on_log(f"Failed to fetch {repo}: {e}", "error")
                         continue
 
-                    # Remove state + containers for PRs no longer in the list.
+                    # Remove state + clones for PRs no longer in the list.
                     current_numbers = {str(p["number"]) for p in prs}
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
                         if old_num not in current_numbers:
-                            await remove_container(repo, old_num, remove_volume=False)
+                            remove_clone(get_clone_path(repo, int(old_num)))
                             await state_manager.remove_pr(repo, old_num)
                             host.on_log(f"Removed PR #{old_num} ({repo}) from state", "info")
 
@@ -127,14 +112,6 @@ async def poll_loop(
             repos = await state_manager.get_repos()
             display = await build_display_list(repos, state_manager)
             host.on_pr_list(display)
-
-            # Stop idle containers.
-            try:
-                stopped = await idle_shutdown_sweep()
-                for c in stopped:
-                    host.on_log(f"Stopped idle container: {c}", "info")
-            except Exception as e:
-                host.on_log(f"Idle sweep error: {e}", "error")
 
         except asyncio.CancelledError:
             return
