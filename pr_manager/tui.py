@@ -4,8 +4,9 @@ import asyncio
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from rich.markup import escape
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -342,13 +343,28 @@ class PRManagerApp(App):
     TITLE = "PR Manager"
 
     CSS = """
+    #main-layout {
+        height: 1fr;
+    }
     DataTable {
         height: 1fr;
     }
-    RichLog {
+    #log {
         height: 10;
         border-top: solid $primary-darken-2;
         padding: 0 1;
+    }
+    #chat-panel {
+        display: none;
+        width: 40%;
+        border-left: solid $primary-darken-2;
+    }
+    #chat-log {
+        height: 1fr;
+        padding: 0 1;
+    }
+    #chat-input {
+        dock: bottom;
     }
     """
 
@@ -359,6 +375,7 @@ class PRManagerApp(App):
         Binding("o", "open_terminal", "terminal"),
         Binding("v", "view_agent", "view agent"),
         Binding("c", "open_claude_session", "claude session"),
+        Binding("slash", "toggle_chat", "chat"),
         Binding("s", "settings", "settings"),
         Binding("a", "add_repo", "add repo"),
         Binding("r", "remove_repo", "remove repo"),
@@ -379,11 +396,18 @@ class PRManagerApp(App):
         self._active_tasks: dict[tuple[str, int], asyncio.Task] = {}
         self._spinner_idx = 0
         self._poll_task: Optional[asyncio.Task] = None
+        self._assistant: Optional[Any] = None
+        self._assistant_busy = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield DataTable(id="pr-table", cursor_type="row")
-        yield RichLog(id="log", highlight=True, markup=True)
+        with Horizontal(id="main-layout"):
+            with Vertical(id="left-panel"):
+                yield DataTable(id="pr-table", cursor_type="row")
+                yield RichLog(id="log", highlight=True, markup=True)
+            with Vertical(id="chat-panel"):
+                yield RichLog(id="chat-log", highlight=True, markup=True)
+                yield Input(id="chat-input", placeholder="Ask the assistant...")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -649,3 +673,66 @@ class PRManagerApp(App):
         self._display_prs = [p for p in self._display_prs if p.repo != pr.repo]
         self._refresh_table()
         self.post_message(AppLogMessage(f"Removed repo: {pr.repo}", "info"))
+
+    # ── Chat assistant ──────────────────────────────────────────────────
+
+    async def action_toggle_chat(self) -> None:
+        panel = self.query_one("#chat-panel")
+        if panel.display:
+            panel.display = False
+            self.query_one(DataTable).focus()
+        else:
+            panel.display = True
+            if self._assistant is None:
+                from .assistant import Assistant
+                from .assistant_api import AssistantContext
+
+                ctx = AssistantContext(self, self._state_manager, self._active_tasks)
+                self._assistant = Assistant(ctx)
+                chat_log = self.query_one("#chat-log", RichLog)
+                chat_log.write("[dim]Assistant ready. Type a message below.[/dim]")
+            self.query_one("#chat-input", Input).focus()
+
+    def on_key(self, event: Any) -> None:
+        if event.key == "escape":
+            panel = self.query_one("#chat-panel")
+            if panel.display:
+                panel.display = False
+                self.query_one(DataTable).focus()
+                event.stop()
+
+    @on(Input.Submitted, "#chat-input")
+    async def _on_chat_submit(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        if not text or self._assistant_busy:
+            return
+        event.input.clear()
+        chat_log = self.query_one("#chat-log", RichLog)
+        chat_log.write(f"[bold cyan]You:[/bold cyan] {escape(text)}")
+        self._assistant_busy = True
+        asyncio.create_task(self._process_chat(text))
+
+    async def _process_chat(self, text: str) -> None:
+        chat_log = self.query_one("#chat-log", RichLog)
+        chat_log.write("[dim]thinking...[/dim]")
+
+        def on_tool(code: str) -> None:
+            lines = code.splitlines()
+            if len(lines) <= 3:
+                for line in lines:
+                    chat_log.write(f"  [dim]{escape(line)}[/dim]")
+            else:
+                for line in lines[:2]:
+                    chat_log.write(f"  [dim]{escape(line)}[/dim]")
+                chat_log.write(f"  [dim]... ({len(lines) - 2} more lines)[/dim]")
+
+        try:
+            assert self._assistant is not None
+            response = await self._assistant.send(text, on_tool_use=on_tool)
+            chat_log.write(f"[bold green]Assistant:[/bold green]")
+            for line in response.splitlines():
+                chat_log.write(f"  {escape(line)}")
+        except Exception as e:
+            chat_log.write(f"[bold red]Error:[/bold red] {escape(str(e))}")
+        finally:
+            self._assistant_busy = False

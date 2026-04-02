@@ -5,6 +5,7 @@ description = "Terminal UI for managing GitHub PRs with Claude Code agents"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic",
     "claude-agent-sdk",
     "textual>=0.80.0",
 ]
