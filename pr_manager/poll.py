@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 from typing import Callable, Optional, Protocol
 
+from .container import remove_container, idle_shutdown_sweep
 from .git import (
-    get_clone_path,
     gh_list_prs,
     git_update_pristine,
-    remove_clone,
 )
 from .processor import PRProcessor
 from .state import PRDisplayInfo, PRState, StateManager
@@ -50,11 +49,11 @@ async def poll_loop(
                         host.on_log(f"Failed to fetch {repo}: {e}", "error")
                         continue
 
-                    # Remove state + clones for PRs no longer in the list.
+                    # Remove state + containers for PRs no longer in the list.
                     current_numbers = {str(p["number"]) for p in prs}
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
                         if old_num not in current_numbers:
-                            remove_clone(get_clone_path(repo, int(old_num)))
+                            await remove_container(repo, old_num, remove_volume=False)
                             await state_manager.remove_pr(repo, old_num)
                             host.on_log(f"Removed PR #{old_num} ({repo}) from state", "info")
 
@@ -112,6 +111,14 @@ async def poll_loop(
             repos = await state_manager.get_repos()
             display = await build_display_list(repos, state_manager)
             host.on_pr_list(display)
+
+            # Stop idle containers.
+            try:
+                stopped = await idle_shutdown_sweep()
+                for c in stopped:
+                    host.on_log(f"Stopped idle container: {c}", "info")
+            except Exception as e:
+                host.on_log(f"Idle sweep error: {e}", "error")
 
         except asyncio.CancelledError:
             return

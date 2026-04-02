@@ -1,3 +1,5 @@
+"""Agent runner — executes Claude Code inside Docker containers via docker exec."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,22 +7,6 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    CLIConnectionError,
-    CLINotFoundError,
-    RateLimitEvent,
-    ResultMessage,
-    StreamEvent,
-    SystemMessage,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
-    query,
-)
 
 from .state import PRState, StateManager
 
@@ -49,14 +35,14 @@ class AgentRunner:
         repo: str,
         pr_number: int,
         branch: str,
-        worktree_path: Path,
+        container_name: str,
         state_manager: StateManager,
         log_path: Path,
     ) -> None:
         self._repo = repo
         self._pr_number = pr_number
         self._branch = branch
-        self._worktree_path = worktree_path
+        self._container_name = container_name
         self._state_manager = state_manager
         self._log_path = log_path
 
@@ -85,25 +71,58 @@ class AgentRunner:
         pr_state = await self._state_manager.get_pr_state(self._repo, str(self._pr_number))
         session_id = pr_state.session_id if pr_state else None
 
-        options = ClaudeAgentOptions(
-            cwd=str(self._worktree_path),
-            allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
-            permission_mode="bypassPermissions",
-            resume=session_id,
-            max_turns=50,
-        )
+        # Build claude CLI command to run inside the container.
+        claude_args = [
+            "claude", "-p",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--max-turns", "50",
+            "--permission-mode", "bypassPermissions",
+            "--allowed-tools", "Bash,Read,Write,Edit,Glob,Grep",
+            "--bare",
+        ]
+        if session_id:
+            claude_args += ["--resume", session_id]
+        claude_args.append(prompt)
+
+        docker_cmd = [
+            "docker", "exec",
+            "-w", "/home/dev/repo",
+            self._container_name,
+        ] + claude_args
 
         log = AgentLogger(self._log_path)
         found_done = False
         try:
-            log.write(f"[{_ts()}] === Agent started (session={session_id or 'new'}, cwd={self._worktree_path}) ===")
+            log.write(f"[{_ts()}] === Agent started (container={self._container_name}, session={session_id or 'new'}) ===")
             log.write(f"[{_ts()}] Prompt: {prompt[:200]}...")
 
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, SystemMessage):
-                    log.write(f"[{_ts()}] [SYS] subtype={message.subtype} data={json.dumps(message.data, default=str)[:300]}")
-                    if message.subtype == "init":
-                        new_sid = message.data.get("session_id")
+            proc = await asyncio.create_subprocess_exec(
+                *docker_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+            async for raw_line in proc.stdout:
+                line = raw_line.decode(errors="replace").strip()
+                if not line:
+                    continue
+
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    log.write(f"[{_ts()}] [RAW] {line[:500]}")
+                    continue
+
+                event_type = event.get("type", "")
+
+                if event_type == "system":
+                    subtype = event.get("subtype", "")
+                    log.write(f"[{_ts()}] [SYS] subtype={subtype}")
+                    if subtype == "init":
+                        new_sid = event.get("session_id")
                         if new_sid:
                             current = await self._state_manager.get_pr_state(
                                 self._repo, str(self._pr_number)
@@ -113,68 +132,68 @@ class AgentRunner:
                                 self._repo, str(self._pr_number), current
                             )
 
-                elif isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            for line in block.text.splitlines():
-                                log.write(f"[{_ts()}] {line}")
-                        elif isinstance(block, ToolUseBlock):
-                            log.write(f"[{_ts()}] >>> {block.name}(id={block.id})")
-                            input_str = json.dumps(block.input, default=str)
-                            # Log full input for short inputs, truncated for long
-                            if len(input_str) > 500:
-                                log.write(f"[{_ts()}]     input: {input_str[:500]}...")
+                elif event_type == "assistant":
+                    msg = event.get("message", {})
+                    for block in msg.get("content", []):
+                        block_type = block.get("type", "")
+                        if block_type == "text":
+                            for text_line in block.get("text", "").splitlines():
+                                log.write(f"[{_ts()}] {text_line}")
+                        elif block_type == "tool_use":
+                            name = block.get("name", "?")
+                            tool_input = json.dumps(block.get("input", {}), default=str)
+                            if len(tool_input) > 500:
+                                log.write(f"[{_ts()}] >>> {name}(id={block.get('id', '?')})")
+                                log.write(f"[{_ts()}]     input: {tool_input[:500]}...")
                             else:
-                                log.write(f"[{_ts()}]     input: {input_str}")
-                        else:
-                            log.write(f"[{_ts()}] [BLOCK] {type(block).__name__}: {str(block)[:300]}")
-
-                elif isinstance(message, UserMessage):
-                    for block in (message.content if isinstance(message.content, list) else []):
-                        if isinstance(block, ToolResultBlock):
-                            err = " [ERROR]" if block.is_error else ""
-                            content = str(block.content) if block.content else ""
+                                log.write(f"[{_ts()}] >>> {name}: {tool_input}")
+                        elif block_type == "tool_result":
+                            content = str(block.get("content", ""))
+                            err = " [ERROR]" if block.get("is_error") else ""
                             if len(content) > 2000:
-                                # Log first and last portion for long outputs
                                 log.write(f"[{_ts()}] <<< ({len(content)} chars){err}")
-                                for line in content[:1000].splitlines():
-                                    log.write(f"[{_ts()}] <<< {line}")
+                                for cl in content[:1000].splitlines():
+                                    log.write(f"[{_ts()}] <<< {cl}")
                                 log.write(f"[{_ts()}] <<< ... ({len(content) - 2000} chars omitted) ...")
-                                for line in content[-1000:].splitlines():
-                                    log.write(f"[{_ts()}] <<< {line}")
+                                for cl in content[-1000:].splitlines():
+                                    log.write(f"[{_ts()}] <<< {cl}")
                             else:
-                                for line in content.splitlines():
-                                    log.write(f"[{_ts()}] <<< {line}{err}")
-                        elif isinstance(block, ToolUseBlock):
-                            log.write(f"[{_ts()}] [USER-TOOL] {block.name}(id={block.id})")
+                                for cl in content.splitlines():
+                                    log.write(f"[{_ts()}] <<< {cl}{err}")
                         else:
-                            log.write(f"[{_ts()}] [USER-BLOCK] {type(block).__name__}: {str(block)[:300]}")
+                            log.write(f"[{_ts()}] [BLOCK] {block_type}: {json.dumps(block, default=str)[:300]}")
 
-                elif isinstance(message, ResultMessage):
-                    found_done = bool(message.result and "DONE" in message.result.upper())
-                    log.write(f"[{_ts()}] === Agent finished (DONE={found_done}) ===")
-                    if message.result:
-                        log.write(f"[{_ts()}] Result: {message.result[:500]}")
+                elif event_type == "result":
+                    result_text = event.get("result", "")
+                    found_done = bool(result_text and "DONE" in result_text.upper())
+                    is_error = event.get("is_error", False)
+                    log.write(f"[{_ts()}] === Agent finished (DONE={found_done}, error={is_error}) ===")
+                    if result_text:
+                        log.write(f"[{_ts()}] Result: {result_text[:500]}")
 
-                elif isinstance(message, RateLimitEvent):
-                    info = message.rate_limit_info
-                    log.write(f"[{_ts()}] [RATE] status={info.status} type={info.rate_limit_type} util={info.utilization}")
-
-                elif isinstance(message, StreamEvent):
-                    event = message.event
-                    log.write(f"[{_ts()}] [STREAM] {json.dumps(event, default=str)[:300]}")
+                elif event_type == "rate_limit_event":
+                    info = event.get("rate_limit_info", {})
+                    log.write(f"[{_ts()}] [RATE] status={info.get('status')} type={info.get('rateLimitType')}")
 
                 else:
-                    log.write(f"[{_ts()}] [???] {type(message).__name__}: {str(message)[:300]}")
+                    log.write(f"[{_ts()}] [???] {event_type}: {json.dumps(event, default=str)[:300]}")
 
-        except (CLINotFoundError, CLIConnectionError) as e:
-            log.write(f"[{_ts()}] [FATAL] Agent SDK error: {e}")
-            return False
+            await proc.wait()
+            if proc.returncode != 0:
+                stderr = (await proc.stderr.read()).decode(errors="replace").strip()
+                log.write(f"[{_ts()}] [FATAL] docker exec exited with code {proc.returncode}: {stderr}")
+                if not found_done:
+                    return False
+
         except asyncio.CancelledError:
-            log.write(f"[{_ts()}] [INFO] Agent cancelled by user")
+            log.write(f"[{_ts()}] [INFO] Agent cancelled")
+            try:
+                proc.terminate()
+            except (NameError, ProcessLookupError):
+                pass
             raise
         except Exception as e:
-            log.write(f"[{_ts()}] [FATAL] Unexpected error: {type(e).__name__}: {e}")
+            log.write(f"[{_ts()}] [FATAL] {type(e).__name__}: {e}")
             return False
         finally:
             log.close()
