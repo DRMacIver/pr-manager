@@ -90,15 +90,33 @@ class NewBranchScreen(ModalScreen):
         if not branch:
             self.app.post_message(AppLogMessage("Branch name required", "error"))
             return
-        self.dismiss((repo, branch))
+        repos = await self._state_manager.get_repos()
+        if repo not in repos:
+            await self._state_manager.add_repo(repo)
+        try:
+            repo_path = get_repo_path(repo)
+            await git_clone_or_fetch(repo, repo_path)
+            worktree_path = repo_path / f"branch-{branch.replace('/', '-')}"
+            await git_create_new_branch_worktree(repo_path, worktree_path, branch)
+            await self._state_manager.add_local_branch(repo, branch)
+            await run_cmd([
+                "tmux", "new-window",
+                "-c", str(worktree_path),
+                "-n", f"new-{branch}",
+                "claude",
+            ], check=False)
+            self.app.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
+        except Exception as e:
+            self.app.post_message(AppLogMessage(f"Failed to create branch: {e}", "error"))
+        self.dismiss()
 
     @on(Button.Pressed, "#nb-cancel")
     def _cancel(self) -> None:
-        self.dismiss(None)
+        self.dismiss()
 
     def on_key(self, event) -> None:
         if event.key == "escape":
-            self.dismiss(None)
+            self.dismiss()
 
 
 class AddRepoScreen(ModalScreen):
@@ -486,28 +504,7 @@ class PRManagerApp(App):
         if not self._check_tmux():
             return
         repos = await self._state_manager.get_repos()
-        result = await self.push_screen_wait(NewBranchScreen(self._state_manager, repos))
-        if result is None:
-            return
-        repo, branch = result
-        # Ensure the repo is tracked and cloned.
-        if repo not in repos:
-            await self._state_manager.add_repo(repo)
-        try:
-            repo_path = get_repo_path(repo)
-            await git_clone_or_fetch(repo, repo_path)
-            worktree_path = repo_path / f"branch-{branch.replace('/', '-')}"
-            await git_create_new_branch_worktree(repo_path, worktree_path, branch)
-            await self._state_manager.add_local_branch(repo, branch)
-            await run_cmd([
-                "tmux", "new-window",
-                "-c", str(worktree_path),
-                "-n", f"new-{branch}",
-                f"claude",
-            ], check=False)
-            self.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
-        except Exception as e:
-            self.post_message(AppLogMessage(f"Failed to create branch: {e}", "error"))
+        await self.push_screen(NewBranchScreen(self._state_manager, repos))
 
     async def action_add_repo(self) -> None:
         await self.push_screen(AddRepoScreen(self._state_manager))
