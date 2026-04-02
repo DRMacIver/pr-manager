@@ -15,7 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
-from .git import get_log_path, get_worktree_path, run_cmd
+from .git import get_log_path, get_repo_path, get_worktree_path, git_clone_or_fetch, git_create_new_branch_worktree, run_cmd
 from .poll import poll_loop
 from .state import PRDisplayInfo, PRState, StateManager
 
@@ -45,6 +45,61 @@ class AppLogMessage(Message):
 
 
 # ── Add-repo modal ───────────────────────────────────────────────────────────
+
+class NewBranchScreen(ModalScreen):
+    DEFAULT_CSS = """
+    NewBranchScreen {
+        align: center middle;
+    }
+    #nb-dialog {
+        padding: 1 2;
+        width: 60;
+        height: auto;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    #nb-dialog Input { margin-bottom: 1; }
+    #nb-buttons Button { margin-right: 1; }
+    """
+
+    def __init__(self, state_manager: StateManager, repos: list[str]) -> None:
+        super().__init__()
+        self._state_manager = state_manager
+        self._repos = repos
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Static
+        with Vertical(id="nb-dialog"):
+            yield Static("New branch")
+            if len(self._repos) == 1:
+                yield Input(value=self._repos[0], id="nb-repo")
+            else:
+                yield Input(placeholder="owner/repo", id="nb-repo")
+            yield Input(placeholder="branch-name", id="nb-branch")
+            with Horizontal(id="nb-buttons"):
+                yield Button("Create", variant="primary", id="nb-create")
+                yield Button("Cancel", id="nb-cancel")
+
+    @on(Button.Pressed, "#nb-create")
+    async def _create(self) -> None:
+        repo = self.query_one("#nb-repo", Input).value.strip()
+        branch = self.query_one("#nb-branch", Input).value.strip()
+        if "/" not in repo:
+            self.app.post_message(AppLogMessage("Invalid repo — expected owner/repo", "error"))
+            return
+        if not branch:
+            self.app.post_message(AppLogMessage("Branch name required", "error"))
+            return
+        self.dismiss((repo, branch))
+
+    @on(Button.Pressed, "#nb-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+
 
 class AddRepoScreen(ModalScreen):
     DEFAULT_CSS = """
@@ -215,6 +270,7 @@ class PRManagerApp(App):
     BINDINGS = [
         Binding("b", "open_browser", "browser"),
         Binding("d", "detail", "detail"),
+        Binding("n", "new_branch", "new branch"),
         Binding("o", "open_terminal", "terminal"),
         Binding("v", "view_agent", "view agent"),
         Binding("c", "open_claude_session", "claude session"),
@@ -274,12 +330,12 @@ class PRManagerApp(App):
         table.clear()
         for pr in self._display_prs:
             table.add_row(
-                str(pr.number),
+                str(pr.number) if pr.number else "—",
                 pr.repo,
                 pr.branch,
                 self._format_status(pr.status, pr.is_active),
                 pr.age,
-                key=f"{pr.repo}:{pr.number}",
+                key=f"{pr.repo}:{pr.number or pr.branch}",
             )
         try:
             if self._display_prs:
@@ -425,6 +481,33 @@ class PRManagerApp(App):
         self.post_message(AppLogMessage(
             f"Opened Claude session for PR #{pr.number}", "info"
         ))
+
+    async def action_new_branch(self) -> None:
+        if not self._check_tmux():
+            return
+        repos = await self._state_manager.get_repos()
+        result = await self.push_screen_wait(NewBranchScreen(self._state_manager, repos))
+        if result is None:
+            return
+        repo, branch = result
+        # Ensure the repo is tracked and cloned.
+        if repo not in repos:
+            await self._state_manager.add_repo(repo)
+        try:
+            repo_path = get_repo_path(repo)
+            await git_clone_or_fetch(repo, repo_path)
+            worktree_path = repo_path / f"branch-{branch.replace('/', '-')}"
+            await git_create_new_branch_worktree(repo_path, worktree_path, branch)
+            await self._state_manager.add_local_branch(repo, branch)
+            await run_cmd([
+                "tmux", "new-window",
+                "-c", str(worktree_path),
+                "-n", f"new-{branch}",
+                f"claude",
+            ], check=False)
+            self.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
+        except Exception as e:
+            self.post_message(AppLogMessage(f"Failed to create branch: {e}", "error"))
 
     async def action_add_repo(self) -> None:
         await self.push_screen(AddRepoScreen(self._state_manager))

@@ -64,6 +64,13 @@ async def poll_loop(
                             await state_manager.remove_pr(repo, old_num)
                             host.on_log(f"Removed PR #{old_num} ({repo}) from state", "info")
 
+                    # Adopt local branches that now have PRs.
+                    pr_branches = {p["headRefName"] for p in prs}
+                    for branch in await state_manager.get_local_branches(repo):
+                        if branch in pr_branches:
+                            await state_manager.remove_local_branch(repo, branch)
+                            host.on_log(f"Branch {branch} ({repo}) now has a PR — adopted", "info")
+
                     # Ensure all known PRs have stub state so they appear immediately.
                     for pr_data in prs:
                         pn = str(pr_data["number"])

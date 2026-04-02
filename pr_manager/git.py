@@ -106,6 +106,15 @@ async def git_clone_or_fetch(repo: str, local_path: Path) -> None:
         ])
 
 
+async def git_create_new_branch_worktree(repo_path: Path, worktree_path: Path, branch: str) -> None:
+    """Create a new branch from origin/main and set up a worktree for it."""
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
+    await run_cmd(
+        ["git", "worktree", "add", "-b", branch, str(worktree_path), "origin/main"],
+        cwd=repo_path,
+    )
+
+
 async def git_setup_worktree(repo_path: Path, worktree_path: Path, branch: str) -> None:
     if worktree_path.exists():
         return

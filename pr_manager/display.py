@@ -39,5 +39,17 @@ async def build_display_list(
                 is_active=pr_state.status in ("rebasing", "fixing_ci"),
                 error_message=pr_state.error_message,
             ))
-    result.sort(key=lambda p: (p.repo, p.number))
+        # Include local branches (no PR yet).
+        for branch in await state_manager.get_local_branches(repo):
+            result.append(PRDisplayInfo(
+                repo=repo,
+                number=0,
+                title=f"(local) {branch}",
+                branch=branch,
+                status="local",
+                age="",
+                is_active=False,
+                error_message=None,
+            ))
+    result.sort(key=lambda p: (p.repo, -p.number))
     return result

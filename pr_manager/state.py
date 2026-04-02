@@ -25,6 +25,8 @@ class PRState:
 class AppState:
     repos: list[str] = field(default_factory=list)
     pr_state: dict[str, dict[str, dict]] = field(default_factory=dict)
+    # repo -> list of branch names that don't have PRs yet
+    local_branches: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,6 +60,7 @@ class StateManager:
                 self._state = AppState(
                     repos=data.get("repos", []),
                     pr_state=data.get("pr_state", {}),
+                    local_branches=data.get("local_branches", {}),
                 )
             else:
                 self._state = AppState()
@@ -67,7 +70,11 @@ class StateManager:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATE_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(
-            {"repos": self._state.repos, "pr_state": self._state.pr_state},
+            {
+                "repos": self._state.repos,
+                "pr_state": self._state.pr_state,
+                "local_branches": self._state.local_branches,
+            },
             indent=2,
         ))
         os.replace(tmp, STATE_PATH)
@@ -118,3 +125,25 @@ class StateManager:
         async with self._lock:
             self._state.pr_state.get(repo, {}).pop(str(pr_number), None)
             self._save_sync()
+
+    async def add_local_branch(self, repo: str, branch: str) -> None:
+        async with self._lock:
+            branches = self._state.local_branches.setdefault(repo, [])
+            if branch not in branches:
+                branches.append(branch)
+                self._save_sync()
+
+    async def remove_local_branch(self, repo: str, branch: str) -> None:
+        async with self._lock:
+            branches = self._state.local_branches.get(repo, [])
+            if branch in branches:
+                branches.remove(branch)
+                self._save_sync()
+
+    async def get_local_branches(self, repo: str) -> list[str]:
+        async with self._lock:
+            return list(self._state.local_branches.get(repo, []))
+
+    async def get_all_local_branches(self) -> dict[str, list[str]]:
+        async with self._lock:
+            return {r: list(bs) for r, bs in self._state.local_branches.items()}
