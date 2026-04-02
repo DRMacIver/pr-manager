@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+# Fix ownership of home directory if it was just created by Docker as root.
+if [ ! -w "$HOME" ]; then
+    sudo chown -R dev:dev "$HOME"
+fi
+
 export CLAUDE_CONFIG_DIR="$HOME/.claude"
 
 # ── SSH keys (mounted read-only, need to copy for correct permissions) ───────
