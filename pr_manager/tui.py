@@ -102,15 +102,14 @@ class NewBranchScreen(ModalScreen):
             await self._state_manager.add_local_branch(repo, branch)
             settings = await self._state_manager.get_settings()
             cmd = "claude"
-            if settings.claude_permission_mode == "dangerouslySkipPermissions":
-                cmd += " --dangerously-skip-permissions"
-            elif settings.claude_permission_mode != "default":
+            if settings.claude_permission_mode != "default":
                 cmd += f" --permission-mode {settings.claude_permission_mode}"
+            wrapped = f'{cmd} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
             await run_cmd([
                 "tmux", "new-window",
                 "-c", str(worktree_path),
                 "-n", f"new-{branch}",
-                cmd,
+                "sh", "-c", wrapped,
             ], check=False)
             self.app.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
         except Exception as e:
@@ -489,6 +488,17 @@ class PRManagerApp(App):
             return False
         return True
 
+    async def run_action(self, action, default_namespace=None, namespaces=None) -> bool:
+        """Override to catch and log errors from all actions."""
+        try:
+            return await super().run_action(action, default_namespace, namespaces)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self.post_message(AppLogMessage(f"Action failed: {e}", "error"))
+            self.post_message(AppLogMessage(tb, "error"))
+            return False
+
     async def action_detail(self) -> None:
         pr = self._get_selected_pr()
         if not pr:
@@ -577,15 +587,19 @@ class PRManagerApp(App):
             cmd += f" --resume {pr_state.session_id}"
         if settings.claude_permission_mode != "default":
             cmd += f" --permission-mode {settings.claude_permission_mode}"
-        await run_cmd([
+        # Wrap so if claude crashes the error stays visible.
+        wrapped = f'{cmd} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
+        self.post_message(AppLogMessage(f"Running: {cmd}", "info"))
+        rc, _, stderr = await run_cmd([
             "tmux", "new-window",
             "-c", str(worktree),
             "-n", f"claude-{pr.number or pr.branch}",
-            cmd,
+            "sh", "-c", wrapped,
         ], check=False)
-        self.post_message(AppLogMessage(
-            f"Opened Claude session for {pr.branch}", "info"
-        ))
+        if rc != 0:
+            self.post_message(AppLogMessage(
+                f"tmux new-window failed (rc={rc}): {stderr}", "error"
+            ))
 
     async def action_new_branch(self) -> None:
         if not self._check_tmux():
