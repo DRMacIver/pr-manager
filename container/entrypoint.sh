@@ -26,6 +26,14 @@ if [ -f /mnt/host-gitconfig ] && [ ! -f ~/.gitconfig ]; then
     cp /mnt/host-gitconfig ~/.gitconfig
 fi
 
-# ~/.claude is bind-mounted directly from the host.
+# ── Claude Code credentials ──────────────────────────────────────────────────
+# ~/.claude is bind-mounted from the host, but OAuth tokens live in the macOS
+# Keychain, not on disk. The host extracts them to a file that we mount.
+
+if [ -f /mnt/claude-credentials/credentials.json ]; then
+    mkdir -p ~/.claude
+    cp /mnt/claude-credentials/credentials.json ~/.claude/credentials.json
+    chmod 600 ~/.claude/credentials.json
+fi
 
 exec "$@"

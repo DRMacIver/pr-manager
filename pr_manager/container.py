@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from .git import get_pristine_path, run_cmd
@@ -13,6 +15,7 @@ IDLE_TIMEOUT_MINUTES = 10
 GC_AFTER_DAYS = 1
 
 HOME = Path.home()
+CREDENTIALS_DIR = HOME / ".cache" / "pr-manager" / "credentials"
 
 
 def _container_name(repo: str, identifier: str) -> str:
@@ -28,6 +31,26 @@ def _volume_name(repo: str, identifier: str) -> str:
 def container_name_for(repo: str, identifier: str) -> str:
     """Public access to the deterministic container name."""
     return _container_name(repo, identifier)
+
+
+def _extract_claude_credentials() -> Path:
+    """Extract Claude OAuth tokens from macOS Keychain to a file.
+
+    Returns the directory containing credentials.json.
+    """
+    CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    creds_file = CREDENTIALS_DIR / "credentials.json"
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, check=True,
+        )
+        creds_file.write_text(result.stdout.strip())
+        os.chmod(creds_file, 0o600)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Not on macOS or no keychain entry — skip silently.
+        pass
+    return CREDENTIALS_DIR
 
 
 async def ensure_image_built(project_root: Path) -> None:
@@ -78,6 +101,9 @@ async def start_container(
     pristine = get_pristine_path(repo)
     ssh_url = _ssh_url(repo)
 
+    # Extract Claude OAuth tokens from macOS Keychain before container creation.
+    creds_dir = _extract_claude_credentials()
+
     # Create and start a new container.
     cmd = [
         "docker", "run", "-d",
@@ -90,10 +116,14 @@ async def start_container(
     if pristine.exists():
         cmd += ["-v", f"{pristine}:/mnt/pristine:ro"]
 
-    # Mount ~/.claude directly from the host.
+    # Mount ~/.claude directly from the host (config, settings, etc).
     claude_dir = HOME / ".claude"
     if claude_dir.exists():
         cmd += ["-v", f"{claude_dir}:/home/dev/.claude"]
+
+    # Mount extracted credentials (OAuth tokens from Keychain).
+    if (creds_dir / "credentials.json").exists():
+        cmd += ["-v", f"{creds_dir}:/mnt/claude-credentials:ro"]
 
     # Mount host SSH keys read-only (entrypoint copies with correct perms).
     ssh_dir = HOME / ".ssh"
