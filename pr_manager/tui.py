@@ -15,7 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
-from .container import ensure_image_built, start_container
+from .container import container_name_for, ensure_image_built, start_container
 from .git import get_log_path, git_update_pristine, run_cmd
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
@@ -98,13 +98,14 @@ class NewBranchScreen(ModalScreen):
             from .poll import _project_root
             await ensure_image_built(_project_root())
             await git_update_pristine(repo)
-            cname = await start_container(repo, branch, branch, create_branch=True)
+            cname = container_name_for(repo, branch)
+            await start_container(repo, branch, branch, create_branch=True)
             await self._state_manager.add_local_branch(repo, branch)
             settings = await self._state_manager.get_settings()
             cmd = "claude"
             if settings.claude_permission_mode != "default":
                 cmd += f" --permission-mode {settings.claude_permission_mode}"
-            script = PRManagerApp._wait_and_exec_script(cname, cmd)
+            script = PRManagerApp._container_launch_script(cname, cmd)
             await run_cmd([
                 "tmux", "new-window",
                 "-n", f"new-{branch}",
@@ -491,31 +492,32 @@ class PRManagerApp(App):
         """Return the container identifier for a PR or local branch."""
         return str(pr.number) if pr.number else pr.branch
 
-    async def _start_container_detached(self, pr: PRDisplayInfo) -> str:
-        """Start the container (non-blocking). Returns container name.
-
-        Does NOT wait for readiness — the tmux script handles that.
-        """
-        identifier = self._container_id(pr)
-        cname = await start_container(
-            pr.repo, identifier, pr.branch,
-            create_branch=(pr.number == 0),
-        )
-        return cname
-
     @staticmethod
-    def _wait_and_exec_script(container_name: str, cmd: str) -> str:
-        """Shell script that waits for the container to be ready, then execs into it."""
+    def _container_launch_script(container_name: str, cmd: str) -> str:
+        """Shell script that ensures the container is running, waits for readiness, then execs."""
         return (
-            f'echo "Waiting for container {container_name}..."\n'
-            f'docker logs -f {container_name} &\n'
+            f'CNAME="{container_name}"\n'
+            f'# Start the container if it exists but is stopped.\n'
+            f'STATE=$(docker inspect -f "{{{{.State.Running}}}}" "$CNAME" 2>/dev/null)\n'
+            f'if [ "$STATE" = "false" ]; then\n'
+            f'  echo "Starting stopped container $CNAME..."\n'
+            f'  docker start "$CNAME"\n'
+            f'fi\n'
+            f'echo "Waiting for container $CNAME to be ready..."\n'
+            f'docker logs -f "$CNAME" 2>&1 &\n'
             f'LOG_PID=$!\n'
-            f'while ! docker exec {container_name} test -f /tmp/.ready 2>/dev/null; do\n'
+            f'while ! docker exec "$CNAME" test -f /tmp/.ready 2>/dev/null; do\n'
+            f'  if ! docker inspect "$CNAME" >/dev/null 2>&1; then\n'
+            f'    echo "ERROR: Container $CNAME does not exist."\n'
+            f'    echo "Press enter to close..."\n'
+            f'    read\n'
+            f'    exit 1\n'
+            f'  fi\n'
             f'  sleep 0.5\n'
             f'done\n'
             f'kill $LOG_PID 2>/dev/null\n'
-            f'echo "Container ready. Launching..."\n'
-            f'docker exec -it -w /home/dev/repo {container_name} {cmd}\n'
+            f'echo "Container ready."\n'
+            f'docker exec -it -w /home/dev/repo "$CNAME" {cmd}\n'
             f'EXIT=$?\n'
             f'if [ $EXIT -ne 0 ]; then\n'
             f'  echo "Command exited with code $EXIT"\n'
@@ -569,8 +571,13 @@ class PRManagerApp(App):
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
-        cname = await self._start_container_detached(pr)
-        script = self._wait_and_exec_script(cname, "bash")
+        identifier = self._container_id(pr)
+        cname = container_name_for(pr.repo, identifier)
+        # Ensure container exists (fire-and-forget — tmux script handles waiting).
+        asyncio.create_task(start_container(
+            pr.repo, identifier, pr.branch, create_branch=(pr.number == 0),
+        ))
+        script = self._container_launch_script(cname, "bash")
         await run_cmd([
             "tmux", "new-window", "-n", f"term-{pr.number or pr.branch}",
             "bash", "-c", script,
@@ -609,7 +616,11 @@ class PRManagerApp(App):
             self.post_message(AppLogMessage(
                 f"Interrupted automated agent for PR #{pr.number}", "warn"
             ))
-        cname = await self._start_container_detached(pr)
+        identifier = self._container_id(pr)
+        cname = container_name_for(pr.repo, identifier)
+        asyncio.create_task(start_container(
+            pr.repo, identifier, pr.branch, create_branch=(pr.number == 0),
+        ))
         pr_state = await self._state_manager.get_pr_state(pr.repo, str(pr.number))
         settings = await self._state_manager.get_settings()
         claude_cmd = "claude"
@@ -617,7 +628,7 @@ class PRManagerApp(App):
             claude_cmd += f" --resume {pr_state.session_id}"
         if settings.claude_permission_mode != "default":
             claude_cmd += f" --permission-mode {settings.claude_permission_mode}"
-        script = self._wait_and_exec_script(cname, claude_cmd)
+        script = self._container_launch_script(cname, claude_cmd)
         await run_cmd([
             "tmux", "new-window", "-n", f"claude-{pr.number or pr.branch}",
             "bash", "-c", script,
