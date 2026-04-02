@@ -155,6 +155,7 @@ class AgentRunner:
                     log.write(f"[{_ts()}] === Agent finished (DONE={found_done}) ===")
                     if message.result:
                         log.write(f"[{_ts()}] Result: {message.result[:500]}")
+                    break
 
                 elif isinstance(message, RateLimitEvent):
                     info = message.rate_limit_info
