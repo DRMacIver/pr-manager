@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Callable, Optional, Protocol
 
-from .container import remove_container, idle_shutdown_sweep
+from .container import ensure_image_built, remove_container, idle_shutdown_sweep
 from .git import (
     gh_list_prs,
     git_update_pristine,
@@ -21,12 +22,25 @@ class PollHost(Protocol):
     def on_pr_list(self, prs: list[PRDisplayInfo]) -> None: ...
 
 
+def _project_root() -> Path:
+    """Return the directory containing the Dockerfile."""
+    return Path(__file__).resolve().parent.parent
+
+
 async def poll_loop(
     host: PollHost,
     state_manager: StateManager,
     poll_interval_minutes: int,
     recent_minutes: int,
 ) -> None:
+    # Build Docker image once at startup.
+    try:
+        host.on_log("Checking Docker image...", "info")
+        await ensure_image_built(_project_root())
+        host.on_log("Docker image ready.", "info")
+    except Exception as e:
+        host.on_log(f"Failed to build Docker image: {e}", "error")
+
     while True:
         try:
             repos = await state_manager.get_repos()

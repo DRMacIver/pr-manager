@@ -15,7 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
-from .container import start_container, wait_for_ready
+from .container import ensure_image_built, start_container, wait_for_ready
 from .git import get_log_path, git_update_pristine, run_cmd
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
@@ -95,6 +95,8 @@ class NewBranchScreen(ModalScreen):
         if repo not in repos:
             await self._state_manager.add_repo(repo)
         try:
+            from .poll import _project_root
+            await ensure_image_built(_project_root())
             await git_update_pristine(repo)
             cname = await start_container(repo, branch, branch, create_branch=True)
             await wait_for_ready(repo, branch)
