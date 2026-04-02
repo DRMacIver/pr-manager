@@ -177,9 +177,9 @@ class PRProcessor:
         runner = AgentRunner(
             self._repo, pr_number, branch, clone_path, self._state_manager, log_path
         )
-        success = await runner.run_rebase()
+        result = await runner.run_rebase()
 
-        if success:
+        if result and "DONE" in result.upper():
             pushed = await git_push_force_with_lease(clone_path, branch)
             if pushed:
                 new_commits = await git_get_new_commits_since(clone_path, old_sha)
@@ -218,9 +218,15 @@ class PRProcessor:
         runner = AgentRunner(
             self._repo, pr_number, branch, clone_path, self._state_manager, log_path
         )
-        success = await runner.run_ci_fix(failures)
+        result = await runner.run_ci_fix(failures)
+        result_upper = (result or "").upper()
 
-        if success:
+        if "UNFIXABLE" in result_upper:
+            self._set_error(
+                pr_state, pr_number,
+                "CI failures appear unrelated to PR changes (check log with [v])",
+            )
+        elif "DONE" in result_upper:
             new_sha = await git_get_current_sha(clone_path)
             if new_sha != old_sha:
                 pushed = await git_push_force_with_lease(clone_path, branch)

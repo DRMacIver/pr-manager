@@ -60,7 +60,7 @@ class AgentRunner:
         self._state_manager = state_manager
         self._log_path = log_path
 
-    async def run_rebase(self) -> bool:
+    async def run_rebase(self) -> str | None:
         prompt = (
             f"PR #{self._pr_number} (branch: {self._branch}) needs to be rebased on top of main.\n"
             "Steps:\n"
@@ -71,17 +71,23 @@ class AgentRunner:
         )
         return await self._run_agent(prompt)
 
-    async def run_ci_fix(self, failures: str) -> bool:
+    async def run_ci_fix(self, failures: str) -> str | None:
         prompt = (
             f"PR #{self._pr_number} (branch: {self._branch}) has failing CI checks:\n"
             f"{failures}\n\n"
-            "Please examine the failures and fix the code so the CI will pass.\n"
+            "IMPORTANT: Before attempting any fix, triage the failures:\n"
+            "1. Run: git diff --name-only origin/main...HEAD\n"
+            "2. Compare the files this PR modifies with the failing tests/errors.\n"
+            "3. If the failures are clearly unrelated to the PR's changes (e.g. upstream\n"
+            "   dependency breakage, infrastructure issues, flaky tests in untouched code),\n"
+            "   do NOT attempt to fix them. Instead output exactly: UNFIXABLE\n\n"
+            "Only if the failures are plausibly caused by this PR's changes, fix the code.\n"
             "Commit your changes when done (use git add -A && git commit).\n"
             "When complete, output exactly: DONE"
         )
         return await self._run_agent(prompt)
 
-    async def _run_agent(self, prompt: str) -> bool:
+    async def _run_agent(self, prompt: str) -> str | None:
         pr_state = await self._state_manager.get_pr_state(self._repo, str(self._pr_number))
         session_id = pr_state.session_id if pr_state else None
 
@@ -94,7 +100,7 @@ class AgentRunner:
         )
 
         log = AgentLogger(self._log_path)
-        found_done = False
+        result_text: str | None = None
         try:
             log.write(f"[{_ts()}] === Agent started (session={session_id or 'new'}, cwd={self._worktree_path}) ===")
             log.write(f"[{_ts()}] Prompt: {prompt[:200]}...")
@@ -151,10 +157,10 @@ class AgentRunner:
                             log.write(f"[{_ts()}] [USER-BLOCK] {type(block).__name__}: {str(block)[:300]}")
 
                 elif isinstance(message, ResultMessage):
-                    found_done = bool(message.result and "DONE" in message.result.upper())
-                    log.write(f"[{_ts()}] === Agent finished (DONE={found_done}) ===")
-                    if message.result:
-                        log.write(f"[{_ts()}] Result: {message.result[:500]}")
+                    result_text = message.result
+                    log.write(f"[{_ts()}] === Agent finished ===")
+                    if result_text:
+                        log.write(f"[{_ts()}] Result: {result_text[:500]}")
                     break
 
                 elif isinstance(message, RateLimitEvent):
@@ -170,14 +176,14 @@ class AgentRunner:
 
         except (CLINotFoundError, CLIConnectionError) as e:
             log.write(f"[{_ts()}] [FATAL] Agent SDK error: {e}")
-            return False
+            return None
         except asyncio.CancelledError:
             log.write(f"[{_ts()}] [INFO] Agent cancelled by user")
             raise
         except Exception as e:
             log.write(f"[{_ts()}] [FATAL] Unexpected error: {type(e).__name__}: {e}")
-            return False
+            return None
         finally:
             log.close()
 
-        return found_done
+        return result_text
