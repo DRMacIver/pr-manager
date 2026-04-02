@@ -471,6 +471,17 @@ class PRManagerApp(App):
             return self._display_prs[row]
         return None
 
+    async def _find_session_for_worktree(self, worktree: Path) -> Optional[str]:
+        """Find the most recent Claude session for a worktree directory."""
+        try:
+            from claude_agent_sdk import list_sessions
+            sessions = list_sessions(directory=str(worktree), limit=1)
+            if sessions:
+                return sessions[0].session_id
+        except Exception:
+            pass
+        return None
+
     @staticmethod
     def _resolve_worktree(pr: PRDisplayInfo) -> Path:
         if pr.number == 0:
@@ -580,11 +591,12 @@ class PRManagerApp(App):
                 f"Worktree not found for {pr.branch}", "error"
             ))
             return
-        pr_state = await self._state_manager.get_pr_state(pr.repo, str(pr.number))
+        # Find the most recent session for this worktree.
+        session_id = await self._find_session_for_worktree(worktree)
         settings = await self._state_manager.get_settings()
         cmd = "claude"
-        if pr_state and pr_state.session_id:
-            cmd += f" --resume {pr_state.session_id}"
+        if session_id:
+            cmd += f" --resume {session_id}"
         if settings.claude_permission_mode != "default":
             cmd += f" --permission-mode {settings.claude_permission_mode}"
         # Wrap so if claude crashes the error stays visible.
