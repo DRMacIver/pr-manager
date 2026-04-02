@@ -138,6 +138,14 @@ class PRProcessor:
             self._log_cb(f"PR #{pr_number} ({self._repo}) ✓ green", "info")
 
         except asyncio.CancelledError:
+            try:
+                s = await self._state_manager.get_pr_state(self._repo, str(pr_number)) or PRState()
+                s.status = "pending"
+                s.error_message = None
+                await self._state_manager.upsert_pr_state(self._repo, str(pr_number), s)
+                self._status_cb(self._repo, pr_number, "pending", None)
+            except Exception:
+                pass
             raise
         except Exception as e:
             self._log_cb(f"Error processing PR #{pr_number} ({self._repo}): {e}", "error")
