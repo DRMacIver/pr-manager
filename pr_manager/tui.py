@@ -388,7 +388,7 @@ class PRManagerApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("PR#", "Repo", "Branch", "Status", "Age")
+        table.add_columns("PR#", "Repo", "Branch", "Status", "Review", "Activity", "Age")
         host = TuiPollHost(self)
         self._poll_task = asyncio.create_task(
             poll_loop(host, self._state_manager, self._poll_interval, self._recent_minutes)
@@ -402,6 +402,20 @@ class PRManagerApp(App):
         self._refresh_table()
 
     # ── Table rendering ──────────────────────────────────────────────────
+
+    REVIEW_STYLES: dict[str, tuple[str, str]] = {
+        "draft":            ("✎", "dim"),
+        "approved":         ("✔", "green"),
+        "changes requested":("✖", "red"),
+        "review needed":    ("⊘", "yellow"),
+        "in review":        ("◎", "cyan"),
+    }
+
+    def _format_review(self, review_status: str) -> Text:
+        if not review_status:
+            return Text("")
+        icon, style = self.REVIEW_STYLES.get(review_status, ("", "dim"))
+        return Text(f"{icon} {review_status}", style=style)
 
     def _format_status(self, status: str, is_active: bool) -> Text:
         icon, style = STATUS_STYLE.get(status, ("?", "dim"))
@@ -420,6 +434,8 @@ class PRManagerApp(App):
                 pr.repo,
                 pr.branch,
                 self._format_status(pr.status, pr.is_active),
+                self._format_review(pr.review_status),
+                pr.activity,
                 pr.age,
                 key=f"{pr.repo}:{pr.number or pr.branch}",
             )

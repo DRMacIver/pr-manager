@@ -19,6 +19,11 @@ class PRState:
     title: str = ""
     branch: str = ""
     created_at: Optional[str] = None
+    is_draft: bool = False
+    review_decision: str = ""
+    comment_count: int = 0
+    review_count: int = 0
+    latest_activity: Optional[str] = None
 
 
 CLAUDE_PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "dontAsk", "plan", "auto"]
@@ -58,6 +63,8 @@ class PRDisplayInfo:
     age: str
     is_active: bool
     error_message: Optional[str]
+    review_status: str = ""
+    activity: str = ""
 
 
 _PR_STATE_FIELDS = set(PRState.__dataclass_fields__)

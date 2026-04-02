@@ -49,6 +49,15 @@ class PRProcessor:
             pr_state.branch = branch
             pr_state.created_at = created_at
             pr_state.last_checked = datetime.now(timezone.utc).isoformat()
+            pr_state.is_draft = self._pr_data.get("isDraft", False)
+            pr_state.review_decision = self._pr_data.get("reviewDecision", "")
+            comments = self._pr_data.get("comments", [])
+            reviews = self._pr_data.get("reviews", [])
+            pr_state.comment_count = len(comments) + len(reviews)
+            pr_state.review_count = len(reviews)
+            # Latest activity: most recent comment or review timestamp.
+            timestamps = [c.get("createdAt", "") for c in comments] + [r.get("submittedAt", "") for r in reviews]
+            pr_state.latest_activity = max(timestamps) if timestamps else None
             await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
 
             clone_path = get_clone_path(self._repo, pr_number)

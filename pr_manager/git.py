@@ -59,7 +59,7 @@ def get_log_path(repo: str, pr_number: int) -> Path:
 async def gh_list_prs(repo: str) -> list[dict]:
     _, out, _ = await run_cmd([
         "gh", "pr", "list", "--repo", repo, "--state", "open", "--author", "@me",
-        "--json", "number,title,headRefName,headRefOid,createdAt",
+        "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,reviewDecision,comments,reviews",
     ])
     return json.loads(out) if out else []
 
