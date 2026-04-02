@@ -34,22 +34,36 @@ def container_name_for(repo: str, identifier: str) -> str:
 
 
 def _extract_claude_credentials() -> Path:
-    """Extract Claude OAuth tokens from macOS Keychain to a file.
+    """Extract Claude OAuth tokens and config for container use.
 
-    Returns the directory containing credentials.json.
+    Extracts:
+    - claude-keychain.json: OAuth tokens from macOS Keychain
+    - claude-config.json: ~/.claude/.claude.json (contains oauthAccount)
+
+    Returns the credentials directory.
     """
     CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
-    creds_file = CREDENTIALS_DIR / "credentials.json"
+
+    # OAuth tokens from macOS Keychain.
+    keychain_file = CREDENTIALS_DIR / "claude-keychain.json"
     try:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
             capture_output=True, text=True, check=True,
         )
-        creds_file.write_text(result.stdout.strip())
-        os.chmod(creds_file, 0o600)
+        keychain_file.write_text(result.stdout.strip())
+        os.chmod(keychain_file, 0o600)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        # Not on macOS or no keychain entry — skip silently.
         pass
+
+    # Config file with oauthAccount (critical for auth to work).
+    config_file = CREDENTIALS_DIR / "claude-config.json"
+    for source in [HOME / ".claude" / ".claude.json", HOME / ".claude.json"]:
+        if source.exists():
+            config_file.write_bytes(source.read_bytes())
+            os.chmod(config_file, 0o600)
+            break
+
     return CREDENTIALS_DIR
 
 
@@ -116,13 +130,8 @@ async def start_container(
     if pristine.exists():
         cmd += ["-v", f"{pristine}:/mnt/pristine:ro"]
 
-    # Mount ~/.claude directly from the host (config, settings, etc).
-    claude_dir = HOME / ".claude"
-    if claude_dir.exists():
-        cmd += ["-v", f"{claude_dir}:/home/dev/.claude"]
-
-    # Mount extracted credentials (OAuth tokens from Keychain).
-    if (creds_dir / "credentials.json").exists():
+    # Mount extracted credentials (OAuth tokens + config from host).
+    if creds_dir.exists():
         cmd += ["-v", f"{creds_dir}:/mnt/claude-credentials:ro"]
 
     # Mount host SSH keys read-only (entrypoint copies with correct perms).
