@@ -3,7 +3,8 @@
 Each PR or local branch gets its own Docker container with:
 - A persistent home directory (Docker volume)
 - The repo cloned into ~/repo (non-shared)
-- Credentials bind-mounted from the host
+- Host ~/.claude mounted directly
+- SSH keys and gh auth copied from host on first start
 - Auto-shutdown 10 minutes after last usage
 """
 
@@ -16,13 +17,13 @@ from .git import run_cmd
 
 CONTAINER_PREFIX = "pr-manager"
 IMAGE_NAME = "pr-manager-dev"
-CREDENTIALS_DIR = Path("~/.config/pr-manager/credentials").expanduser()
 IDLE_TIMEOUT_MINUTES = 10
 GC_AFTER_DAYS = 1
 
+HOME = Path.home()
+
 
 def _container_name(repo: str, identifier: str) -> str:
-    """Deterministic container name from repo + PR number or branch name."""
     safe_repo = repo.replace("/", "-")
     safe_id = identifier.replace("/", "-")
     return f"{CONTAINER_PREFIX}-{safe_repo}-{safe_id}"
@@ -33,7 +34,6 @@ def _volume_name(repo: str, identifier: str) -> str:
 
 
 async def ensure_image_built(project_root: Path) -> None:
-    """Build the Docker image if it doesn't exist or is outdated."""
     rc, _, _ = await run_cmd(
         ["docker", "image", "inspect", IMAGE_NAME],
         check=False,
@@ -68,10 +68,7 @@ async def start_container(
         return name
 
     # Check if container exists but is stopped.
-    rc, _, _ = await run_cmd(
-        ["docker", "inspect", name],
-        check=False,
-    )
+    rc, _, _ = await run_cmd(["docker", "inspect", name], check=False)
     if rc == 0:
         await run_cmd(["docker", "start", name])
         return name
@@ -84,14 +81,25 @@ async def start_container(
         "--hostname", identifier.replace("/", "-"),
     ]
 
-    # Mount credentials if they exist.
-    if CREDENTIALS_DIR.exists():
-        cmd += ["-v", f"{CREDENTIALS_DIR}:/mnt/credentials:ro"]
+    # Mount ~/.claude directly from the host.
+    claude_dir = HOME / ".claude"
+    if claude_dir.exists():
+        cmd += ["-v", f"{claude_dir}:/home/dev/.claude"]
 
-    # Mount SSH keys if they exist.
-    ssh_dir = Path("~/.config/pr-manager/ssh-keys").expanduser()
+    # Mount host SSH keys read-only (entrypoint copies with correct perms).
+    ssh_dir = HOME / ".ssh"
     if ssh_dir.exists():
-        cmd += ["-v", f"{ssh_dir}:/mnt/ssh-keys:ro"]
+        cmd += ["-v", f"{ssh_dir}:/mnt/host-ssh:ro"]
+
+    # Mount gh CLI config read-only (entrypoint copies).
+    gh_dir = HOME / ".config" / "gh"
+    if gh_dir.exists():
+        cmd += ["-v", f"{gh_dir}:/mnt/host-gh-config:ro"]
+
+    # Mount gitconfig read-only.
+    gitconfig = HOME / ".gitconfig"
+    if gitconfig.exists():
+        cmd += ["-v", f"{gitconfig}:/mnt/host-gitconfig:ro"]
 
     cmd += [
         IMAGE_NAME,
@@ -104,7 +112,6 @@ async def start_container(
 
 
 def _startup_script(ssh_url: str, branch: str, create_branch: bool) -> str:
-    """Shell script that runs inside the container on first start."""
     clone_cmd = f"git clone {ssh_url} ~/repo"
     if create_branch:
         checkout = f"cd ~/repo && git checkout -b {branch} origin/main"
@@ -118,7 +125,6 @@ def _startup_script(ssh_url: str, branch: str, create_branch: bool) -> str:
 
 
 async def exec_in_container(name: str, cmd: list[str], workdir: str = "/home/dev/repo") -> tuple[int, str, str]:
-    """Run a command inside a running container."""
     return await run_cmd([
         "docker", "exec", "-w", workdir, name,
     ] + cmd, check=False)
@@ -129,7 +135,6 @@ async def get_tmux_command_for_container(
     cmd: str = "bash",
     workdir: str = "/home/dev/repo",
 ) -> list[str]:
-    """Return a tmux new-window command that docker-execs into the container."""
     return [
         "tmux", "new-window", "-n", name,
         "docker", "exec", "-it", "-w", workdir, name, "bash", "-c", cmd,
@@ -150,7 +155,6 @@ async def remove_container(repo: str, identifier: str, remove_volume: bool = Fal
 
 
 async def list_containers() -> list[dict]:
-    """List all pr-manager containers with their status."""
     rc, out, _ = await run_cmd([
         "docker", "ps", "-a",
         "--filter", f"name={CONTAINER_PREFIX}-",
@@ -167,34 +171,8 @@ async def list_containers() -> list[dict]:
 
 # ── Idle shutdown ────────────────────────────────────────────────────────────
 
-async def check_container_idle(repo: str, identifier: str) -> bool:
-    """Check if a container has been idle (no exec sessions) for IDLE_TIMEOUT_MINUTES."""
-    name = _container_name(repo, identifier)
-
-    # Check for active exec sessions (tmux windows into the container).
-    rc, out, _ = await run_cmd([
-        "docker", "top", name, "-o", "pid,comm",
-    ], check=False)
-    if rc != 0:
-        return True  # Container not running = idle.
-
-    # If there's anything besides sleep/entrypoint, it's active.
-    lines = out.strip().splitlines()[1:]  # Skip header
-    active_procs = [
-        line for line in lines
-        if not any(idle in line.lower() for idle in ("sleep", "entrypoint"))
-    ]
-    return len(active_procs) == 0
-
-
 async def idle_shutdown_sweep() -> list[str]:
-    """Stop containers that have been idle for IDLE_TIMEOUT_MINUTES.
-
-    Returns list of container names that were stopped.
-    """
-    # This is a simplified version — a full implementation would track
-    # last-activity timestamps. For now, just check if there are any
-    # active processes beyond sleep.
+    """Stop containers that have no active processes beyond sleep."""
     stopped = []
     containers = await list_containers()
     for c in containers:
@@ -203,26 +181,24 @@ async def idle_shutdown_sweep() -> list[str]:
         cname = c.get("Names", "")
         if not cname.startswith(CONTAINER_PREFIX + "-"):
             continue
-        # Check if idle.
         rc, out, _ = await run_cmd([
             "docker", "top", cname, "-o", "pid,comm",
         ], check=False)
         if rc != 0:
             continue
         lines = out.strip().splitlines()[1:]
-        active = [l for l in lines if not any(x in l.lower() for x in ("sleep", "entrypoint", "bash -c"))]
+        active = [
+            line for line in lines
+            if not any(x in line.lower() for x in ("sleep", "entrypoint", "bash -c"))
+        ]
         if not active:
             await run_cmd(["docker", "stop", "-t", "5", cname], check=False)
             stopped.append(cname)
     return stopped
 
 
-async def gc_old_volumes(state_manager, max_age_days: int = GC_AFTER_DAYS) -> list[str]:
-    """Remove volumes for PRs that have been closed for more than max_age_days.
-
-    Returns list of volume names that were removed.
-    """
-    # List all pr-manager volumes.
+async def gc_old_volumes(state_manager) -> list[str]:
+    """Remove volumes for PRs/branches no longer tracked in state."""
     rc, out, _ = await run_cmd([
         "docker", "volume", "ls",
         "--filter", f"name={CONTAINER_PREFIX}-home-",
@@ -239,11 +215,9 @@ async def gc_old_volumes(state_manager, max_age_days: int = GC_AFTER_DAYS) -> li
         if not vol_name:
             continue
 
-        # Check if any active PR/branch still uses this volume.
         in_use = False
         for repo in all_repos:
-            states = await state_manager.get_all_pr_states(repo)
-            for pr_num in states:
+            for pr_num in await state_manager.get_all_pr_states(repo):
                 if _volume_name(repo, pr_num) == vol_name:
                     in_use = True
                     break
@@ -257,7 +231,6 @@ async def gc_old_volumes(state_manager, max_age_days: int = GC_AFTER_DAYS) -> li
                 break
 
         if not in_use:
-            # Container is gone and PR/branch removed from state — GC it.
             await run_cmd(["docker", "rm", "-f", vol_name], check=False)
             await run_cmd(["docker", "volume", "rm", "-f", vol_name], check=False)
             removed.append(vol_name)

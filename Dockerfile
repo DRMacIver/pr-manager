@@ -92,9 +92,5 @@ RUN npm install -g @anthropic-ai/claude-code
 COPY --chown=dev:dev container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# gh wrapper that reads token from a mounted credentials file
-COPY --chown=dev:dev container/gh-wrapper.sh /usr/local/bin/gh-auth-wrapper
-RUN chmod +x /usr/local/bin/gh-auth-wrapper
-
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["bash"]
