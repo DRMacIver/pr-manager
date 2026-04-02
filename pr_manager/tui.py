@@ -15,7 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
-from .container import ensure_image_built, start_container, wait_for_ready
+from .container import ensure_image_built, start_container
 from .git import get_log_path, git_update_pristine, run_cmd
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
@@ -99,18 +99,16 @@ class NewBranchScreen(ModalScreen):
             await ensure_image_built(_project_root())
             await git_update_pristine(repo)
             cname = await start_container(repo, branch, branch, create_branch=True)
-            await wait_for_ready(repo, branch)
             await self._state_manager.add_local_branch(repo, branch)
             settings = await self._state_manager.get_settings()
             cmd = "claude"
             if settings.claude_permission_mode != "default":
                 cmd += f" --permission-mode {settings.claude_permission_mode}"
-            wrapped = f'{cmd} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
+            script = PRManagerApp._wait_and_exec_script(cname, cmd)
             await run_cmd([
                 "tmux", "new-window",
                 "-n", f"new-{branch}",
-                "docker", "exec", "-it", "-w", "/home/dev/repo", cname,
-                "bash", "-c", wrapped,
+                "bash", "-c", script,
             ], check=False)
             self.app.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
         except Exception as e:
@@ -493,15 +491,38 @@ class PRManagerApp(App):
         """Return the container identifier for a PR or local branch."""
         return str(pr.number) if pr.number else pr.branch
 
-    async def _ensure_container_for(self, pr: PRDisplayInfo) -> str:
-        """Ensure the container is running for a PR/branch. Returns container name."""
+    async def _start_container_detached(self, pr: PRDisplayInfo) -> str:
+        """Start the container (non-blocking). Returns container name.
+
+        Does NOT wait for readiness — the tmux script handles that.
+        """
         identifier = self._container_id(pr)
         cname = await start_container(
             pr.repo, identifier, pr.branch,
             create_branch=(pr.number == 0),
         )
-        await wait_for_ready(pr.repo, identifier)
         return cname
+
+    @staticmethod
+    def _wait_and_exec_script(container_name: str, cmd: str) -> str:
+        """Shell script that waits for the container to be ready, then execs into it."""
+        return (
+            f'echo "Waiting for container {container_name}..."\n'
+            f'docker logs -f {container_name} &\n'
+            f'LOG_PID=$!\n'
+            f'while ! docker exec {container_name} test -f /tmp/.ready 2>/dev/null; do\n'
+            f'  sleep 0.5\n'
+            f'done\n'
+            f'kill $LOG_PID 2>/dev/null\n'
+            f'echo "Container ready. Launching..."\n'
+            f'docker exec -it -w /home/dev/repo {container_name} {cmd}\n'
+            f'EXIT=$?\n'
+            f'if [ $EXIT -ne 0 ]; then\n'
+            f'  echo "Command exited with code $EXIT"\n'
+            f'  echo "Press enter to close..."\n'
+            f'  read\n'
+            f'fi\n'
+        )
 
     # ── Key actions ──────────────────────────────────────────────────────
 
@@ -548,17 +569,12 @@ class PRManagerApp(App):
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
-        self.post_message(AppLogMessage(f"Starting container for {pr.branch}...", "info"))
-
-        async def _do() -> None:
-            cname = await self._ensure_container_for(pr)
-            await run_cmd([
-                "tmux", "new-window", "-n", f"term-{pr.number or pr.branch}",
-                "docker", "exec", "-it", "-w", "/home/dev/repo", cname, "bash",
-            ], check=False)
-            self.post_message(AppLogMessage(f"Opened terminal for {pr.branch}", "info"))
-
-        asyncio.create_task(_do())
+        cname = await self._start_container_detached(pr)
+        script = self._wait_and_exec_script(cname, "bash")
+        await run_cmd([
+            "tmux", "new-window", "-n", f"term-{pr.number or pr.branch}",
+            "bash", "-c", script,
+        ], check=False)
 
     async def action_view_agent(self) -> None:
         if not self._check_tmux():
@@ -593,31 +609,19 @@ class PRManagerApp(App):
             self.post_message(AppLogMessage(
                 f"Interrupted automated agent for PR #{pr.number}", "warn"
             ))
-        self.post_message(AppLogMessage(f"Starting container for {pr.branch}...", "info"))
-
-        async def _do() -> None:
-            cname = await self._ensure_container_for(pr)
-            pr_state = await self._state_manager.get_pr_state(pr.repo, str(pr.number))
-            settings = await self._state_manager.get_settings()
-            claude_args = "claude"
-            if pr_state and pr_state.session_id:
-                claude_args += f" --resume {pr_state.session_id}"
-            if settings.claude_permission_mode != "default":
-                claude_args += f" --permission-mode {settings.claude_permission_mode}"
-            wrapped = f'{claude_args} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
-            self.post_message(AppLogMessage(f"Running: {claude_args}", "info"))
-            rc, _, stderr = await run_cmd([
-                "tmux", "new-window",
-                "-n", f"claude-{pr.number or pr.branch}",
-                "docker", "exec", "-it", "-w", "/home/dev/repo", cname,
-                "bash", "-c", wrapped,
-            ], check=False)
-            if rc != 0:
-                self.post_message(AppLogMessage(
-                    f"tmux new-window failed (rc={rc}): {stderr}", "error"
-                ))
-
-        asyncio.create_task(_do())
+        cname = await self._start_container_detached(pr)
+        pr_state = await self._state_manager.get_pr_state(pr.repo, str(pr.number))
+        settings = await self._state_manager.get_settings()
+        claude_cmd = "claude"
+        if pr_state and pr_state.session_id:
+            claude_cmd += f" --resume {pr_state.session_id}"
+        if settings.claude_permission_mode != "default":
+            claude_cmd += f" --permission-mode {settings.claude_permission_mode}"
+        script = self._wait_and_exec_script(cname, claude_cmd)
+        await run_cmd([
+            "tmux", "new-window", "-n", f"claude-{pr.number or pr.branch}",
+            "bash", "-c", script,
+        ], check=False)
 
     async def action_new_branch(self) -> None:
         if not self._check_tmux():
