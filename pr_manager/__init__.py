@@ -3,11 +3,28 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
+import traceback
 
 from .state import StateManager
 
 
 def main() -> None:
+    try:
+        _main()
+    except SystemExit:
+        raise
+    except BaseException:
+        traceback.print_exc()
+        print("\nPress q to exit...", flush=True)
+        while True:
+            c = sys.stdin.read(1)
+            if c in ("q", "Q", ""):
+                break
+        sys.exit(1)
+
+
+def _main() -> None:
     parser = argparse.ArgumentParser(
         prog="pr-manager",
         description="GitHub PR auto-manager with Claude agent integration",
