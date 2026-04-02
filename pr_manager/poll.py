@@ -4,11 +4,10 @@ import asyncio
 from typing import Callable, Optional, Protocol
 
 from .git import (
-    get_repo_path,
-    get_worktree_path,
+    get_clone_path,
     gh_list_prs,
-    git_clone_or_fetch,
-    run_cmd,
+    git_update_pristine,
+    remove_clone,
 )
 from .processor import PRProcessor
 from .state import PRDisplayInfo, PRState, StateManager
@@ -46,21 +45,16 @@ async def poll_loop(
                         continue
 
                     try:
-                        await git_clone_or_fetch(repo, get_repo_path(repo))
+                        await git_update_pristine(repo)
                     except Exception as e:
                         host.on_log(f"Failed to fetch {repo}: {e}", "error")
                         continue
 
-                    # Remove state + worktrees for PRs no longer in the list.
+                    # Remove state + clones for PRs no longer in the list.
                     current_numbers = {str(p["number"]) for p in prs}
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
                         if old_num not in current_numbers:
-                            wt = get_worktree_path(repo, int(old_num))
-                            if wt.exists():
-                                await run_cmd(
-                                    ["git", "worktree", "remove", "--force", str(wt)],
-                                    cwd=get_repo_path(repo), check=False,
-                                )
+                            remove_clone(get_clone_path(repo, int(old_num)))
                             await state_manager.remove_pr(repo, old_num)
                             host.on_log(f"Removed PR #{old_num} ({repo}) from state", "info")
 

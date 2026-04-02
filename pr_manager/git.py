@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -28,18 +29,25 @@ async def run_cmd(
     return rc, stdout, stderr
 
 
+def _ssh_url(repo: str) -> str:
+    return f"git@github.com:{repo}.git"
+
+
 # ── Path helpers ─────────────────────────────────────────────────────────────
 
-def get_repo_path(repo: str) -> Path:
-    return REPOS_DIR / repo.replace("/", "-")
+def get_pristine_path(repo: str) -> Path:
+    """The cached pristine clone — never worked in directly."""
+    return REPOS_DIR / repo.replace("/", "-") / "pristine"
 
 
-def get_worktree_path(repo: str, pr_number: int) -> Path:
-    return get_repo_path(repo) / f"pr-{pr_number}"
+def get_clone_path(repo: str, pr_number: int) -> Path:
+    """Working clone for a PR."""
+    return REPOS_DIR / repo.replace("/", "-") / f"pr-{pr_number}"
 
 
-def get_branch_worktree_path(repo: str, branch: str) -> Path:
-    return get_repo_path(repo) / f"branch-{branch.replace('/', '-')}"
+def get_branch_clone_path(repo: str, branch: str) -> Path:
+    """Working clone for a local branch."""
+    return REPOS_DIR / repo.replace("/", "-") / f"branch-{branch.replace('/', '-')}"
 
 
 def get_log_path(repo: str, pr_number: int) -> Path:
@@ -96,47 +104,62 @@ async def gh_get_recent_commits(repo: str, branch: str, since_iso: str) -> list[
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-# ── Git ──────────────────────────────────────────────────────────────────────
+# ── Pristine clone management ───────────────────────────────────────────────
 
-async def git_clone_or_fetch(repo: str, local_path: Path) -> None:
-    ssh_url = f"git@github.com:{repo}.git"
-    if (local_path / ".git").exists():
-        await run_cmd(["git", "remote", "set-url", "origin", ssh_url], cwd=local_path)
-        await run_cmd(["git", "fetch", "origin", "--prune"], cwd=local_path)
+async def git_update_pristine(repo: str) -> None:
+    """Ensure the pristine clone exists and is up-to-date."""
+    pristine = get_pristine_path(repo)
+    ssh = _ssh_url(repo)
+    if (pristine / ".git").exists():
+        await run_cmd(["git", "remote", "set-url", "origin", ssh], cwd=pristine)
+        await run_cmd(["git", "fetch", "origin", "--prune"], cwd=pristine)
     else:
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        await run_cmd([
-            "git", "clone", f"git@github.com:{repo}.git", str(local_path),
-        ])
+        pristine.parent.mkdir(parents=True, exist_ok=True)
+        await run_cmd(["git", "clone", ssh, str(pristine)])
 
 
-async def git_create_new_branch_worktree(repo_path: Path, worktree_path: Path, branch: str) -> None:
-    """Create a new branch from origin/main and set up a worktree for it."""
-    worktree_path.parent.mkdir(parents=True, exist_ok=True)
-    await run_cmd(
-        ["git", "worktree", "add", "-b", branch, str(worktree_path), "origin/main"],
-        cwd=repo_path,
-    )
+# ── Working clone management ────────────────────────────────────────────────
+
+async def _clone_from_pristine(repo: str, clone_path: Path) -> None:
+    """Clone from the pristine cache and set remote to the real origin."""
+    pristine = get_pristine_path(repo)
+    clone_path.parent.mkdir(parents=True, exist_ok=True)
+    await run_cmd(["git", "clone", str(pristine), str(clone_path)])
+    await run_cmd(["git", "remote", "set-url", "origin", _ssh_url(repo)], cwd=clone_path)
 
 
-async def git_setup_worktree(repo_path: Path, worktree_path: Path, branch: str) -> None:
-    if worktree_path.exists():
+async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
+    """Ensure a working clone exists for a PR branch."""
+    clone_path = get_clone_path(repo, pr_number)
+    if clone_path.exists():
         return
-    await run_cmd(
-        ["git", "branch", "--track", branch, f"origin/{branch}"],
-        cwd=repo_path, check=False,
-    )
-    await run_cmd(
-        ["git", "worktree", "add", str(worktree_path), branch],
-        cwd=repo_path,
-    )
+    await _clone_from_pristine(repo, clone_path)
+    await run_cmd(["git", "checkout", branch], cwd=clone_path, check=False)
 
 
-async def git_commits_behind_main(worktree_path: Path, branch: str) -> int:
+async def git_create_branch_clone(repo: str, branch: str) -> Path:
+    """Create a working clone with a new branch from origin/main."""
+    clone_path = get_branch_clone_path(repo, branch)
+    await _clone_from_pristine(repo, clone_path)
+    await run_cmd(["git", "checkout", "-b", branch, "origin/main"], cwd=clone_path)
+    return clone_path
+
+
+def remove_clone(clone_path: Path) -> None:
+    """Remove a working clone directory."""
+    if clone_path.exists():
+        shutil.rmtree(clone_path)
+
+
+# ── Git queries & operations (run in working clones) ────────────────────────
+
+async def git_commits_behind_main(clone_path: Path, branch: str) -> int:
     """Check how far the *remote* PR branch is behind origin/main."""
+    # Fetch to ensure we have latest refs in this clone.
+    await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path, check=False)
     rc, out, _ = await run_cmd(
         ["git", "rev-list", "--count", f"origin/{branch}..origin/main"],
-        cwd=worktree_path, check=False,
+        cwd=clone_path, check=False,
     )
     if rc != 0:
         return 0
@@ -146,15 +169,15 @@ async def git_commits_behind_main(worktree_path: Path, branch: str) -> int:
         return 0
 
 
-async def git_get_current_sha(worktree_path: Path) -> str:
-    _, out, _ = await run_cmd(["git", "rev-parse", "HEAD"], cwd=worktree_path)
+async def git_get_current_sha(clone_path: Path) -> str:
+    _, out, _ = await run_cmd(["git", "rev-parse", "HEAD"], cwd=clone_path)
     return out.strip()
 
 
-async def git_get_new_commits_since(worktree_path: Path, old_sha: str) -> list[str]:
+async def git_get_new_commits_since(clone_path: Path, old_sha: str) -> list[str]:
     _, out, _ = await run_cmd(
         ["git", "log", "--format=%H", f"{old_sha}..HEAD"],
-        cwd=worktree_path, check=False,
+        cwd=clone_path, check=False,
     )
     return [s.strip() for s in out.splitlines() if s.strip()]
 
@@ -173,28 +196,26 @@ async def git_latest_commit_is_bot(repo: str, branch: str) -> bool:
     return "[bot]" in email or email.endswith("@users.noreply.github.com") and "bot" in email
 
 
-async def git_reattribute_and_push(worktree_path: Path, branch: str) -> bool:
+async def git_reattribute_and_push(clone_path: Path, branch: str) -> bool:
     """Pull the latest remote commit, reattribute it to the local user, and push."""
-    # Update worktree to match remote.
     rc, _, _ = await run_cmd(
         ["git", "reset", "--hard", f"origin/{branch}"],
-        cwd=worktree_path, check=False,
+        cwd=clone_path, check=False,
     )
     if rc != 0:
         return False
-    # Amend the commit to use the local user's identity, triggering a new SHA.
     rc, _, _ = await run_cmd(
         ["git", "commit", "--amend", "--no-edit", "--reset-author"],
-        cwd=worktree_path, check=False,
+        cwd=clone_path, check=False,
     )
     if rc != 0:
         return False
-    return await git_push_force_with_lease(worktree_path, branch)
+    return await git_push_force_with_lease(clone_path, branch)
 
 
-async def git_push_force_with_lease(worktree_path: Path, branch: str) -> bool:
+async def git_push_force_with_lease(clone_path: Path, branch: str) -> bool:
     rc, _, _ = await run_cmd(
         ["git", "push", "origin", branch, "--force-with-lease"],
-        cwd=worktree_path, check=False,
+        cwd=clone_path, check=False,
     )
     return rc == 0

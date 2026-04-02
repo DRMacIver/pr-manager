@@ -7,9 +7,8 @@ from typing import Callable, Optional
 
 from .agent import AgentRunner
 from .git import (
+    get_clone_path,
     get_log_path,
-    get_repo_path,
-    get_worktree_path,
     gh_get_recent_commits,
     gh_pr_check_status,
     git_commits_behind_main,
@@ -18,7 +17,7 @@ from .git import (
     git_latest_commit_is_bot,
     git_push_force_with_lease,
     git_reattribute_and_push,
-    git_setup_worktree,
+    git_setup_pr_clone,
 )
 from .state import PRState, StateManager
 
@@ -52,12 +51,11 @@ class PRProcessor:
             pr_state.last_checked = datetime.now(timezone.utc).isoformat()
             await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
 
-            repo_path = get_repo_path(self._repo)
-            worktree_path = get_worktree_path(self._repo, pr_number)
+            clone_path = get_clone_path(self._repo, pr_number)
             log_path = get_log_path(self._repo, pr_number)
 
             self._log_cb(f"Checking PR #{pr_number} ({self._repo}/{branch})", "info")
-            await git_setup_worktree(repo_path, worktree_path, branch)
+            await git_setup_pr_clone(self._repo, pr_number, branch)
 
             pr_state = await self._state_manager.get_pr_state(self._repo, str(pr_number)) or PRState(
                 title=title, branch=branch, created_at=created_at,
@@ -72,12 +70,12 @@ class PRProcessor:
                 return
 
             # 2. Rebase if behind main.
-            behind = await git_commits_behind_main(worktree_path, branch)
+            behind = await git_commits_behind_main(clone_path, branch)
             if behind > 0:
                 self._log_cb(
                     f"PR #{pr_number} is {behind} commit(s) behind main — rebasing", "info"
                 )
-                await self._do_rebase(pr_number, branch, worktree_path, pr_state, log_path)
+                await self._do_rebase(pr_number, branch, clone_path, pr_state, log_path)
                 return
 
             # 3. Check CI status.
@@ -89,9 +87,9 @@ class PRProcessor:
                     self._log_cb(
                         f"PR #{pr_number} has no checks (bot push) — reattributing commit", "info"
                     )
-                    pushed = await git_reattribute_and_push(worktree_path, branch)
+                    pushed = await git_reattribute_and_push(clone_path, branch)
                     if pushed:
-                        old_sha = await git_get_current_sha(worktree_path)
+                        old_sha = await git_get_current_sha(clone_path)
                         await self._state_manager.record_our_commits(
                             self._repo, str(pr_number), [old_sha]
                         )
@@ -113,7 +111,7 @@ class PRProcessor:
 
             if check_status == "failing":
                 self._log_cb(f"PR #{pr_number} has failing checks — fixing CI", "info")
-                await self._do_ci_fix(pr_number, branch, worktree_path, pr_state, log_path, failures)
+                await self._do_ci_fix(pr_number, branch, clone_path, pr_state, log_path, failures)
                 return
             if check_status == "pending":
                 pr_state.status = "pending"
@@ -157,7 +155,7 @@ class PRProcessor:
         self,
         pr_number: int,
         branch: str,
-        worktree_path: Path,
+        clone_path: Path,
         pr_state: PRState,
         log_path: Path,
     ) -> None:
@@ -166,16 +164,16 @@ class PRProcessor:
         await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
         self._status_cb(self._repo, pr_number, "rebasing", None)
 
-        old_sha = await git_get_current_sha(worktree_path)
+        old_sha = await git_get_current_sha(clone_path)
         runner = AgentRunner(
-            self._repo, pr_number, branch, worktree_path, self._state_manager, log_path
+            self._repo, pr_number, branch, clone_path, self._state_manager, log_path
         )
         success = await runner.run_rebase()
 
         if success:
-            pushed = await git_push_force_with_lease(worktree_path, branch)
+            pushed = await git_push_force_with_lease(clone_path, branch)
             if pushed:
-                new_commits = await git_get_new_commits_since(worktree_path, old_sha)
+                new_commits = await git_get_new_commits_since(clone_path, old_sha)
                 await self._state_manager.record_our_commits(
                     self._repo, str(pr_number), new_commits
                 )
@@ -197,7 +195,7 @@ class PRProcessor:
         self,
         pr_number: int,
         branch: str,
-        worktree_path: Path,
+        clone_path: Path,
         pr_state: PRState,
         log_path: Path,
         failures: str,
@@ -207,20 +205,20 @@ class PRProcessor:
         await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
         self._status_cb(self._repo, pr_number, "fixing_ci", None)
 
-        old_sha = await git_get_current_sha(worktree_path)
+        old_sha = await git_get_current_sha(clone_path)
         runner = AgentRunner(
-            self._repo, pr_number, branch, worktree_path, self._state_manager, log_path
+            self._repo, pr_number, branch, clone_path, self._state_manager, log_path
         )
         success = await runner.run_ci_fix(failures)
 
         if success:
-            new_sha = await git_get_current_sha(worktree_path)
+            new_sha = await git_get_current_sha(clone_path)
             if new_sha != old_sha:
-                pushed = await git_push_force_with_lease(worktree_path, branch)
+                pushed = await git_push_force_with_lease(clone_path, branch)
                 if not pushed:
                     self._set_error(pr_state, pr_number, "Push rejected after CI fix")
                     return
-                new_commits = await git_get_new_commits_since(worktree_path, old_sha)
+                new_commits = await git_get_new_commits_since(clone_path, old_sha)
                 await self._state_manager.record_our_commits(
                     self._repo, str(pr_number), new_commits
                 )

@@ -16,7 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
-from .git import get_branch_worktree_path, get_log_path, get_repo_path, get_worktree_path, git_clone_or_fetch, git_create_new_branch_worktree, run_cmd
+from .git import get_branch_clone_path, get_clone_path, get_log_path, git_create_branch_clone, git_update_pristine, run_cmd
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
 
@@ -95,10 +95,8 @@ class NewBranchScreen(ModalScreen):
         if repo not in repos:
             await self._state_manager.add_repo(repo)
         try:
-            repo_path = get_repo_path(repo)
-            await git_clone_or_fetch(repo, repo_path)
-            worktree_path = repo_path / f"branch-{branch.replace('/', '-')}"
-            await git_create_new_branch_worktree(repo_path, worktree_path, branch)
+            await git_update_pristine(repo)
+            clone_path = await git_create_branch_clone(repo, branch)
             await self._state_manager.add_local_branch(repo, branch)
             settings = await self._state_manager.get_settings()
             cmd = "claude"
@@ -107,7 +105,7 @@ class NewBranchScreen(ModalScreen):
             wrapped = f'{cmd} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
             await run_cmd([
                 "tmux", "new-window",
-                "-c", str(worktree_path),
+                "-c", str(clone_path),
                 "-n", f"new-{branch}",
                 "sh", "-c", wrapped,
             ], check=False)
@@ -485,8 +483,8 @@ class PRManagerApp(App):
     @staticmethod
     def _resolve_worktree(pr: PRDisplayInfo) -> Path:
         if pr.number == 0:
-            return get_branch_worktree_path(pr.repo, pr.branch)
-        return get_worktree_path(pr.repo, pr.number)
+            return get_branch_clone_path(pr.repo, pr.branch)
+        return get_clone_path(pr.repo, pr.number)
 
     # ── Key actions ──────────────────────────────────────────────────────
 
