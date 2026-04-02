@@ -17,7 +17,7 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 from .constants import STATUS_STYLE, SPINNER_CHARS
 from .git import get_log_path, get_repo_path, get_worktree_path, git_clone_or_fetch, git_create_new_branch_worktree, run_cmd
 from .poll import poll_loop
-from .state import PRDisplayInfo, PRState, StateManager
+from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
 
 
 # ── Textual messages ─────────────────────────────────────────────────────────
@@ -99,11 +99,17 @@ class NewBranchScreen(ModalScreen):
             worktree_path = repo_path / f"branch-{branch.replace('/', '-')}"
             await git_create_new_branch_worktree(repo_path, worktree_path, branch)
             await self._state_manager.add_local_branch(repo, branch)
+            settings = await self._state_manager.get_settings()
+            cmd = "claude"
+            if settings.claude_permission_mode == "dangerouslySkipPermissions":
+                cmd += " --dangerously-skip-permissions"
+            elif settings.claude_permission_mode != "default":
+                cmd += f" --permission-mode {settings.claude_permission_mode}"
             await run_cmd([
                 "tmux", "new-window",
                 "-c", str(worktree_path),
                 "-n", f"new-{branch}",
-                "claude",
+                cmd,
             ], check=False)
             self.app.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
         except Exception as e:
@@ -162,6 +168,69 @@ class AddRepoScreen(ModalScreen):
     @on(Button.Pressed, "#cancel-btn")
     def _cancel(self) -> None:
         self.dismiss()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss()
+
+
+# ── Settings modal ───────────────────────────────────────────────────────────
+
+class SettingsScreen(ModalScreen):
+    DEFAULT_CSS = """
+    SettingsScreen {
+        align: center middle;
+    }
+    #settings-dialog {
+        padding: 1 2;
+        width: 64;
+        height: auto;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    #settings-dialog Static { margin-bottom: 1; }
+    .setting-row { height: auto; margin-bottom: 1; }
+    .setting-row Static { width: auto; margin-right: 1; }
+    .setting-row Button { margin-right: 1; min-width: 0; }
+    """
+
+    def __init__(self, state_manager: StateManager, settings: Settings) -> None:
+        super().__init__()
+        self._state_manager = state_manager
+        self._settings = settings
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Static
+        with Vertical(id="settings-dialog"):
+            yield Static("Settings", id="settings-title")
+            yield Static(f"Claude permission mode: [bold]{self._settings.claude_permission_mode}[/bold]",
+                         id="perm-display")
+            with Horizontal(classes="setting-row"):
+                for mode in CLAUDE_PERMISSION_MODES:
+                    yield Button(mode, id=f"perm-{mode}",
+                                 variant="primary" if mode == self._settings.claude_permission_mode else "default")
+            yield Button("Close", id="settings-close")
+
+    @on(Button.Pressed)
+    async def _on_button(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id or ""
+        if btn_id == "settings-close":
+            self.dismiss()
+            return
+        if btn_id.startswith("perm-"):
+            mode = btn_id[5:]
+            self._settings.claude_permission_mode = mode
+            await self._state_manager.update_settings(self._settings)
+            # Update display.
+            from textual.widgets import Static
+            self.query_one("#perm-display", Static).update(
+                f"Claude permission mode: [bold]{mode}[/bold]"
+            )
+            # Update button variants.
+            for m in CLAUDE_PERMISSION_MODES:
+                btn = self.query_one(f"#perm-{m}", Button)
+                btn.variant = "primary" if m == mode else "default"
+            self.app.post_message(AppLogMessage(f"Permission mode set to: {mode}", "info"))
 
     def on_key(self, event) -> None:
         if event.key == "escape":
@@ -292,6 +361,7 @@ class PRManagerApp(App):
         Binding("o", "open_terminal", "terminal"),
         Binding("v", "view_agent", "view agent"),
         Binding("c", "open_claude_session", "claude session"),
+        Binding("s", "settings", "settings"),
         Binding("a", "add_repo", "add repo"),
         Binding("r", "remove_repo", "remove repo"),
         Binding("q", "quit", "quit"),
@@ -486,10 +556,14 @@ class PRManagerApp(App):
         worktree = get_worktree_path(pr.repo, pr.number)
         cwd = str(worktree) if worktree.exists() else str(os.path.expanduser("~"))
         pr_state = await self._state_manager.get_pr_state(pr.repo, str(pr.number))
+        settings = await self._state_manager.get_settings()
+        cmd = "claude"
         if pr_state and pr_state.session_id:
-            cmd = f"claude --resume {pr_state.session_id}"
-        else:
-            cmd = "claude"
+            cmd += f" --resume {pr_state.session_id}"
+        if settings.claude_permission_mode == "dangerouslySkipPermissions":
+            cmd += " --dangerously-skip-permissions"
+        elif settings.claude_permission_mode != "default":
+            cmd += f" --permission-mode {settings.claude_permission_mode}"
         await run_cmd([
             "tmux", "new-window",
             "-c", cwd,
@@ -505,6 +579,10 @@ class PRManagerApp(App):
             return
         repos = await self._state_manager.get_repos()
         await self.push_screen(NewBranchScreen(self._state_manager, repos))
+
+    async def action_settings(self) -> None:
+        settings = await self._state_manager.get_settings()
+        await self.push_screen(SettingsScreen(self._state_manager, settings))
 
     async def action_add_repo(self) -> None:
         await self.push_screen(AddRepoScreen(self._state_manager))
