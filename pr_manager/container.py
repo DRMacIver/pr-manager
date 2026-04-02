@@ -69,8 +69,11 @@ async def start_container(
     # Check if container exists but is stopped.
     rc, _, _ = await run_cmd(["docker", "inspect", name], check=False)
     if rc == 0:
-        await run_cmd(["docker", "start", name])
-        return name
+        start_rc, _, start_err = await run_cmd(["docker", "start", name], check=False)
+        if start_rc == 0:
+            return name
+        # Container exists but won't start (e.g. created with missing image).
+        await run_cmd(["docker", "rm", "-f", name], check=False)
 
     pristine = get_pristine_path(repo)
     ssh_url = _ssh_url(repo)
