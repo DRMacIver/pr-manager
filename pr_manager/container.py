@@ -36,6 +36,7 @@ async def ensure_image_built(project_root: Path) -> None:
         check=False,
     )
     if rc != 0:
+        # Build with check=True so failures are raised, not swallowed.
         await run_cmd(["docker", "build", "-t", IMAGE_NAME, str(project_root)])
 
 

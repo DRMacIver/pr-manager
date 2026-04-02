@@ -85,7 +85,9 @@ RUN go install honnef.co/go/tools/cmd/staticcheck@latest
 
 # ── Claude Code CLI ──────────────────────────────────────────────────────────
 
+USER root
 RUN npm install -g @anthropic-ai/claude-code
+USER dev
 
 # ── Entrypoint setup ────────────────────────────────────────────────────────
 

@@ -33,13 +33,15 @@ async def poll_loop(
     poll_interval_minutes: int,
     recent_minutes: int,
 ) -> None:
-    # Build Docker image once at startup.
+    # Build Docker image once at startup — fatal if it fails.
+    host.on_log("Checking Docker image...", "info")
     try:
-        host.on_log("Checking Docker image...", "info")
         await ensure_image_built(_project_root())
-        host.on_log("Docker image ready.", "info")
     except Exception as e:
-        host.on_log(f"Failed to build Docker image: {e}", "error")
+        host.on_log(f"FATAL: Failed to build Docker image: {e}", "error")
+        host.on_log("Cannot continue without Docker image. Fix the Dockerfile and restart.", "error")
+        return
+    host.on_log("Docker image ready.", "info")
 
     while True:
         try:
