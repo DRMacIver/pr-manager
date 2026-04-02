@@ -45,6 +45,7 @@ _needs_copy() {
     [ ! -f "$MARKER" ] && return 0
     [ ! -f "$CLAUDE_CONFIG_DIR/.credentials.json" ] && rm -f "$MARKER" && return 0
     [ ! -f "$CLAUDE_CONFIG_DIR/.claude.json" ] && rm -f "$MARKER" && return 0
+    [ ! -f "$HOME/.claude.json" ] && rm -f "$MARKER" && return 0
     return 1
 }
 
@@ -59,6 +60,9 @@ if [ -d /mnt/claude-credentials ] && _needs_copy; then
     if [ -f /mnt/claude-credentials/claude-config.json ]; then
         cp /mnt/claude-credentials/claude-config.json "$CLAUDE_CONFIG_DIR/.claude.json"
         chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
+        # Claude Code also reads ~/.claude.json at home root.
+        cp /mnt/claude-credentials/claude-config.json "$HOME/.claude.json"
+        chmod 600 "$HOME/.claude.json"
     fi
 
     touch "$MARKER"
