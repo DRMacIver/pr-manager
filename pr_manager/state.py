@@ -33,7 +33,10 @@ _SETTINGS_FIELDS = set(Settings.__dataclass_fields__)
 
 
 def _dict_to_settings(d: dict) -> Settings:
-    return Settings(**{k: v for k, v in d.items() if k in _SETTINGS_FIELDS})
+    s = Settings(**{k: v for k, v in d.items() if k in _SETTINGS_FIELDS})
+    if s.claude_permission_mode not in CLAUDE_PERMISSION_MODES:
+        s.claude_permission_mode = "default"
+    return s
 
 
 @dataclass
