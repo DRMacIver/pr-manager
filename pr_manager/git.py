@@ -38,6 +38,10 @@ def get_worktree_path(repo: str, pr_number: int) -> Path:
     return get_repo_path(repo) / f"pr-{pr_number}"
 
 
+def get_branch_worktree_path(repo: str, branch: str) -> Path:
+    return get_repo_path(repo) / f"branch-{branch.replace('/', '-')}"
+
+
 def get_log_path(repo: str, pr_number: int) -> Path:
     return LOGS_DIR / repo.replace("/", "-") / f"pr-{pr_number}.log"
 

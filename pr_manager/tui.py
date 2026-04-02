@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from rich.text import Text
@@ -15,7 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
-from .git import get_log_path, get_repo_path, get_worktree_path, git_clone_or_fetch, git_create_new_branch_worktree, run_cmd
+from .git import get_branch_worktree_path, get_log_path, get_repo_path, get_worktree_path, git_clone_or_fetch, git_create_new_branch_worktree, run_cmd
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
 
@@ -471,6 +472,12 @@ class PRManagerApp(App):
             return self._display_prs[row]
         return None
 
+    @staticmethod
+    def _resolve_worktree(pr: PRDisplayInfo) -> Path:
+        if pr.number == 0:
+            return get_branch_worktree_path(pr.repo, pr.branch)
+        return get_worktree_path(pr.repo, pr.number)
+
     # ── Key actions ──────────────────────────────────────────────────────
 
     def _check_tmux(self) -> bool:
@@ -505,17 +512,17 @@ class PRManagerApp(App):
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
-        worktree = get_worktree_path(pr.repo, pr.number)
+        worktree = self._resolve_worktree(pr)
         if not worktree.exists():
             self.post_message(AppLogMessage(
-                f"Worktree not yet created for PR #{pr.number} — try again after first poll", "warn"
+                f"Worktree not yet created for {pr.branch} — try again after first poll", "warn"
             ))
             return
         await run_cmd(
-            ["tmux", "new-window", "-c", str(worktree), "-n", f"pr-{pr.number}"],
+            ["tmux", "new-window", "-c", str(worktree), "-n", f"pr-{pr.number or pr.branch}"],
             check=False,
         )
-        self.post_message(AppLogMessage(f"Opened terminal for PR #{pr.number}", "info"))
+        self.post_message(AppLogMessage(f"Opened terminal for {pr.branch}", "info"))
 
     async def action_view_agent(self) -> None:
         if not self._check_tmux():
@@ -527,12 +534,16 @@ class PRManagerApp(App):
         log_path = get_log_path(pr.repo, pr.number)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch()
-        worktree = get_worktree_path(pr.repo, pr.number)
-        cwd = str(worktree) if worktree.exists() else str(os.path.expanduser("~"))
+        worktree = self._resolve_worktree(pr)
+        if not worktree.exists():
+            self.post_message(AppLogMessage(
+                f"Worktree not found for {pr.branch}", "error"
+            ))
+            return
         await run_cmd([
             "tmux", "new-window",
-            "-c", cwd,
-            "-n", f"log-{pr.number}",
+            "-c", str(worktree),
+            "-n", f"log-{pr.number or pr.branch}",
             f"tail -f {log_path}",
         ], check=False)
         self.post_message(AppLogMessage(
@@ -553,25 +564,27 @@ class PRManagerApp(App):
             self.post_message(AppLogMessage(
                 f"Interrupted automated agent for PR #{pr.number}", "warn"
             ))
-        worktree = get_worktree_path(pr.repo, pr.number)
-        cwd = str(worktree) if worktree.exists() else str(os.path.expanduser("~"))
+        worktree = self._resolve_worktree(pr)
+        if not worktree.exists():
+            self.post_message(AppLogMessage(
+                f"Worktree not found for {pr.branch}", "error"
+            ))
+            return
         pr_state = await self._state_manager.get_pr_state(pr.repo, str(pr.number))
         settings = await self._state_manager.get_settings()
         cmd = "claude"
         if pr_state and pr_state.session_id:
             cmd += f" --resume {pr_state.session_id}"
-        if settings.claude_permission_mode == "dangerouslySkipPermissions":
-            cmd += " --dangerously-skip-permissions"
-        elif settings.claude_permission_mode != "default":
+        if settings.claude_permission_mode != "default":
             cmd += f" --permission-mode {settings.claude_permission_mode}"
         await run_cmd([
             "tmux", "new-window",
-            "-c", cwd,
-            "-n", f"claude-{pr.number}",
+            "-c", str(worktree),
+            "-n", f"claude-{pr.number or pr.branch}",
             cmd,
         ], check=False)
         self.post_message(AppLogMessage(
-            f"Opened Claude session for PR #{pr.number}", "info"
+            f"Opened Claude session for {pr.branch}", "info"
         ))
 
     async def action_new_branch(self) -> None:

@@ -21,7 +21,7 @@ class PRState:
     created_at: Optional[str] = None
 
 
-CLAUDE_PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "dangerouslySkipPermissions"]
+CLAUDE_PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "dontAsk", "plan", "auto"]
 
 
 @dataclass
