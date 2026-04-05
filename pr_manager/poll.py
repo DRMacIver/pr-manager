@@ -118,4 +118,19 @@ async def poll_loop(
         except Exception as e:
             host.on_log(f"Poll loop error: {e}", "error")
 
-        await asyncio.sleep(poll_interval_minutes * 60)
+        # Poll more frequently when any PR is waiting for CI checks.
+        sleep_minutes = poll_interval_minutes
+        try:
+            any_pending = False
+            for repo in await state_manager.get_repos():
+                for _, pr_state in (await state_manager.get_all_pr_states(repo)).items():
+                    if pr_state.status == "pending":
+                        any_pending = True
+                        break
+                if any_pending:
+                    break
+            if any_pending:
+                sleep_minutes = 1
+        except Exception:
+            pass
+        await asyncio.sleep(sleep_minutes * 60)
