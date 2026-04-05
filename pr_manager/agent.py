@@ -82,7 +82,10 @@ class AgentRunner:
             "   dependency breakage, infrastructure issues, flaky tests in untouched code),\n"
             "   do NOT attempt to fix them. Instead output exactly: UNFIXABLE\n\n"
             "Only if the failures are plausibly caused by this PR's changes, fix the code.\n"
-            "Commit your changes when done (use git add -A && git commit).\n"
+            "After fixing, verify your changes locally before committing:\n"
+            "- Run the failing tests/checks locally if possible\n"
+            "- If local verification passes, commit (use git add -A && git commit)\n"
+            "- If local verification fails, keep iterating until the tests pass\n"
             "When complete, output exactly: DONE"
         )
         return await self._run_agent(prompt)
@@ -129,7 +132,9 @@ class AgentRunner:
             "A reviewer has examined your UNFIXABLE claim and rejected it:\n\n"
             f"{review_feedback}\n\n"
             "You MUST fix the failing CI checks. The UNFIXABLE response is not acceptable.\n"
-            "Fix the code, commit your changes (use git add -A && git commit).\n"
+            "Fix the code, then verify your changes locally by running the failing tests/checks.\n"
+            "Keep iterating until local verification passes.\n"
+            "Commit your changes (use git add -A && git commit).\n"
             "When complete, output exactly: DONE"
         )
         return await self._run_agent(prompt)
