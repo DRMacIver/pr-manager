@@ -59,7 +59,7 @@ def get_log_path(repo: str, pr_number: int) -> Path:
 async def gh_list_prs(repo: str) -> list[dict]:
     _, out, _ = await run_cmd([
         "gh", "pr", "list", "--repo", repo, "--state", "open", "--author", "@me",
-        "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,reviewDecision,comments,reviews",
+        "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,reviewDecision,comments,reviews,body",
     ])
     return json.loads(out) if out else []
 
@@ -153,12 +153,21 @@ def remove_clone(clone_path: Path) -> None:
 
 # ── Git queries & operations (run in working clones) ────────────────────────
 
-async def git_commits_behind_main(clone_path: Path, branch: str) -> int:
-    """Check how far the *remote* PR branch is behind origin/main."""
+async def git_is_ancestor(clone_path: Path, ancestor_branch: str, descendant_branch: str) -> bool:
+    """Check if origin/<ancestor_branch> is an ancestor of origin/<descendant_branch>."""
+    rc, _, _ = await run_cmd(
+        ["git", "merge-base", "--is-ancestor", f"origin/{ancestor_branch}", f"origin/{descendant_branch}"],
+        cwd=clone_path, check=False,
+    )
+    return rc == 0
+
+
+async def git_commits_behind(clone_path: Path, branch: str, target: str = "main") -> int:
+    """Check how far the *remote* PR branch is behind origin/<target>."""
     # Fetch to ensure we have latest refs in this clone.
     await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path, check=False)
     rc, out, _ = await run_cmd(
-        ["git", "rev-list", "--count", f"origin/{branch}..origin/main"],
+        ["git", "rev-list", "--count", f"origin/{branch}..origin/{target}"],
         cwd=clone_path, check=False,
     )
     if rc != 0:

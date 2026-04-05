@@ -24,6 +24,7 @@ class PRState:
     comment_count: int = 0
     review_count: int = 0
     latest_activity: Optional[str] = None
+    stacked_on: Optional[int] = None
 
 
 CLAUDE_PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "dontAsk", "plan", "auto"]

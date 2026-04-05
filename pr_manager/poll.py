@@ -124,7 +124,7 @@ async def poll_loop(
             any_pending = False
             for repo in await state_manager.get_repos():
                 for _, pr_state in (await state_manager.get_all_pr_states(repo)).items():
-                    if pr_state.status == "pending":
+                    if pr_state.status in ("pending", "blocked"):
                         any_pending = True
                         break
                 if any_pending:

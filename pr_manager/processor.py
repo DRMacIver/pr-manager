@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -11,15 +12,32 @@ from .git import (
     get_log_path,
     gh_get_recent_commits,
     gh_pr_check_status,
-    git_commits_behind_main,
+    git_commits_behind,
     git_get_current_sha,
     git_get_new_commits_since,
+    git_is_ancestor,
     git_latest_commit_is_bot,
     git_push_force_with_lease,
     git_reattribute_and_push,
     git_setup_pr_clone,
 )
 from .state import PRState, StateManager
+
+
+def _parse_pr_references(body: str, repo: str) -> list[int]:
+    """Extract PR numbers referenced in a PR body for the given repo."""
+    refs: set[int] = set()
+    # Match https://github.com/owner/repo/pull/123
+    for m in re.finditer(rf'github\.com/{re.escape(repo)}/pull/(\d+)', body):
+        refs.add(int(m.group(1)))
+    # Match owner/repo#123 (must come before bare #N to avoid double-counting)
+    for m in re.finditer(r'(\S+/\S+)#(\d+)', body):
+        if m.group(1) == repo:
+            refs.add(int(m.group(2)))
+    # Match bare #123
+    for m in re.finditer(r'(?<!\S)#(\d+)', body):
+        refs.add(int(m.group(1)))
+    return sorted(refs)
 
 
 class PRProcessor:
@@ -70,6 +88,34 @@ class PRProcessor:
                 title=title, branch=branch, created_at=created_at,
             )
 
+            # 0. Detect stacked PR relationship.
+            await self._detect_stack(pr_number, branch, clone_path, pr_state)
+
+            # 0b. Determine rebase target and check parent status if stacked.
+            rebase_target = "main"
+            if pr_state.stacked_on is not None:
+                parent_state = await self._state_manager.get_pr_state(
+                    self._repo, str(pr_state.stacked_on),
+                )
+                if parent_state is None:
+                    # Parent was merged/closed — unstack.
+                    self._log_cb(
+                        f"PR #{pr_number} unstacking (parent #{pr_state.stacked_on} closed)", "info",
+                    )
+                    pr_state.stacked_on = None
+                    await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
+                else:
+                    rebase_target = parent_state.branch
+                    if parent_state.status != "green":
+                        pr_state.status = "blocked"
+                        pr_state.error_message = f"Waiting on parent PR #{pr_state.stacked_on}"
+                        await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
+                        self._status_cb(self._repo, pr_number, "blocked", pr_state.error_message)
+                        self._log_cb(
+                            f"PR #{pr_number} blocked — parent #{pr_state.stacked_on} is {parent_state.status}", "info",
+                        )
+                        return
+
             # 1. Skip if there are recent human commits.
             if await self._has_human_changes(branch, pr_state, recent_minutes):
                 pr_state.status = "human_changes"
@@ -78,13 +124,13 @@ class PRProcessor:
                 self._status_cb(self._repo, pr_number, "human_changes", None)
                 return
 
-            # 2. Rebase if behind main.
-            behind = await git_commits_behind_main(clone_path, branch)
+            # 2. Rebase if behind target (parent branch or main).
+            behind = await git_commits_behind(clone_path, branch, rebase_target)
             if behind > 0:
                 self._log_cb(
-                    f"PR #{pr_number} is {behind} commit(s) behind main — rebasing", "info"
+                    f"PR #{pr_number} is {behind} commit(s) behind {rebase_target} — rebasing", "info"
                 )
-                await self._do_rebase(pr_number, branch, clone_path, pr_state, log_path)
+                await self._do_rebase(pr_number, branch, clone_path, pr_state, log_path, rebase_target)
                 return
 
             # 3. Check CI status.
@@ -158,6 +204,32 @@ class PRProcessor:
             except Exception:
                 pass
 
+    async def _detect_stack(
+        self, pr_number: int, branch: str, clone_path: Path, pr_state: PRState,
+    ) -> None:
+        """Detect if this PR is stacked on another PR (persistent once found)."""
+        if pr_state.stacked_on is not None:
+            return
+        body = self._pr_data.get("body", "") or ""
+        if not body:
+            return
+        candidates = _parse_pr_references(body, self._repo)
+        for candidate_num in candidates:
+            if candidate_num == pr_number:
+                continue
+            candidate_state = await self._state_manager.get_pr_state(
+                self._repo, str(candidate_num),
+            )
+            if candidate_state is None or not candidate_state.branch:
+                continue
+            if await git_is_ancestor(clone_path, candidate_state.branch, branch):
+                pr_state.stacked_on = candidate_num
+                await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
+                self._log_cb(
+                    f"PR #{pr_number} detected as stacked on #{candidate_num}", "info",
+                )
+                return
+
     async def _has_human_changes(
         self, branch: str, pr_state: PRState, recent_minutes: int
     ) -> bool:
@@ -175,6 +247,7 @@ class PRProcessor:
         clone_path: Path,
         pr_state: PRState,
         log_path: Path,
+        target_branch: str = "main",
     ) -> None:
         pr_state.status = "rebasing"
         pr_state.error_message = None
@@ -185,7 +258,7 @@ class PRProcessor:
         runner = AgentRunner(
             self._repo, pr_number, branch, clone_path, self._state_manager, log_path
         )
-        result = await runner.run_rebase()
+        result = await runner.run_rebase(target_branch)
 
         if result and "DONE" in result.upper():
             pushed = await git_push_force_with_lease(clone_path, branch)

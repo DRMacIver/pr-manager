@@ -60,12 +60,12 @@ class AgentRunner:
         self._state_manager = state_manager
         self._log_path = log_path
 
-    async def run_rebase(self) -> str | None:
+    async def run_rebase(self, target_branch: str = "main") -> str | None:
         prompt = (
-            f"PR #{self._pr_number} (branch: {self._branch}) needs to be rebased on top of main.\n"
+            f"PR #{self._pr_number} (branch: {self._branch}) needs to be rebased on top of {target_branch}.\n"
             "Steps:\n"
             "1. Run: git fetch origin\n"
-            "2. Run: git rebase origin/main\n"
+            f"2. Run: git rebase origin/{target_branch}\n"
             "3. Resolve any conflicts if they arise\n"
             "4. Once the rebase has succeeded, output exactly: DONE"
         )
