@@ -230,6 +230,26 @@ class PRProcessor:
         result_upper = (result or "").upper()
 
         if "UNFIXABLE" in result_upper:
+            # Review the UNFIXABLE claim before accepting it.
+            title = self._pr_data.get("title", "")
+            self._log_cb(f"PR #{pr_number} agent claims UNFIXABLE — reviewing", "info")
+            review_decision, review_feedback = await runner.run_ci_fix_review(
+                result or "", failures, title,
+            )
+            if review_decision == "reject":
+                self._log_cb(
+                    f"PR #{pr_number} UNFIXABLE claim rejected — retrying fix", "info",
+                )
+                result = await runner.run_ci_fix_retry(review_feedback)
+                result_upper = (result or "").upper()
+            else:
+                self._set_error(
+                    pr_state, pr_number,
+                    "CI failures appear unrelated to PR changes (check log with [v])",
+                )
+                return
+
+        if "UNFIXABLE" in result_upper:
             self._set_error(
                 pr_state, pr_number,
                 "CI failures appear unrelated to PR changes (check log with [v])",

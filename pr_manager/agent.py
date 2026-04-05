@@ -87,16 +87,68 @@ class AgentRunner:
         )
         return await self._run_agent(prompt)
 
-    async def _run_agent(self, prompt: str) -> str | None:
-        pr_state = await self._state_manager.get_pr_state(self._repo, str(self._pr_number))
-        session_id = pr_state.session_id if pr_state else None
+    async def run_ci_fix_review(
+        self, fix_response: str, failures: str, pr_title: str,
+    ) -> tuple[str, str]:
+        """Review an UNFIXABLE claim. Returns ("accept"|"reject", feedback)."""
+        prompt = (
+            "You are reviewing whether a CI fix agent's refusal to fix CI failures is justified.\n\n"
+            f"PR #{self._pr_number} (branch: {self._branch})\n"
+            f"PR title: {pr_title}\n\n"
+            f"Failing CI checks:\n{failures}\n\n"
+            f"The CI fix agent was asked to fix these failures but responded:\n"
+            f"---\n{fix_response}\n---\n\n"
+            "Your job: determine if this refusal is legitimate.\n\n"
+            "A refusal is LEGITIMATE only if the failures are genuinely unrelated to the PR's\n"
+            "purpose AND the PR was not created to fix them. For example, a docs typo PR\n"
+            "should not be expected to fix unrelated test failures on main.\n\n"
+            "A refusal is NOT LEGITIMATE if:\n"
+            "- The PR's stated purpose includes fixing these failures\n"
+            "- The agent is merely noting that failures pre-existed on main, rather than\n"
+            "  explaining why they genuinely cannot be fixed\n"
+            "- The agent is treating explicitly requested work as 'out of scope'\n\n"
+            "Check the PR's title, description, and commit history to understand its purpose.\n"
+            f"Run: gh pr view {self._pr_number} --repo {self._repo}\n\n"
+            "Output EXACTLY one of:\n"
+            "- ACCEPT (if the refusal is legitimate — the failures truly aren't this PR's job)\n"
+            "- REJECT: followed by a critique explaining why the agent must fix these failures"
+        )
+        result = await self._run_agent(
+            prompt, persist_session=False, max_turns=15,
+        )
+        result_str = result or ""
+        if "REJECT" in result_str.upper():
+            idx = result_str.upper().find("REJECT")
+            feedback = result_str[idx + len("REJECT"):].lstrip(": ")
+            return "reject", feedback or result_str
+        return "accept", result_str
+
+    async def run_ci_fix_retry(self, review_feedback: str) -> str | None:
+        """Resume the CI fix agent session with reviewer feedback."""
+        prompt = (
+            "A reviewer has examined your UNFIXABLE claim and rejected it:\n\n"
+            f"{review_feedback}\n\n"
+            "You MUST fix the failing CI checks. The UNFIXABLE response is not acceptable.\n"
+            "Fix the code, commit your changes (use git add -A && git commit).\n"
+            "When complete, output exactly: DONE"
+        )
+        return await self._run_agent(prompt)
+
+    async def _run_agent(
+        self, prompt: str, *, persist_session: bool = True, max_turns: int = 50,
+    ) -> str | None:
+        if persist_session:
+            pr_state = await self._state_manager.get_pr_state(self._repo, str(self._pr_number))
+            session_id = pr_state.session_id if pr_state else None
+        else:
+            session_id = None
 
         options = ClaudeAgentOptions(
             cwd=str(self._worktree_path),
             allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
             permission_mode="bypassPermissions",
             resume=session_id,
-            max_turns=50,
+            max_turns=max_turns,
         )
 
         log = AgentLogger(self._log_path)
@@ -108,7 +160,7 @@ class AgentRunner:
             async for message in query(prompt=prompt, options=options):
                 if isinstance(message, SystemMessage):
                     log.write(f"[{_ts()}] [SYS] subtype={message.subtype} data={json.dumps(message.data, default=str)[:300]}")
-                    if message.subtype == "init":
+                    if persist_session and message.subtype == "init":
                         new_sid = message.data.get("session_id")
                         if new_sid:
                             current = await self._state_manager.get_pr_state(
