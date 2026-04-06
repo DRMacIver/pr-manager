@@ -32,12 +32,15 @@ def _ts() -> str:
 class AgentLogger:
     """Writes to a log file with explicit flush after every write."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, tee_stdout: bool = False) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        self._tee_stdout = tee_stdout
 
     def write(self, line: str) -> None:
         os.write(self._fd, (line + "\n").encode())
+        if self._tee_stdout:
+            print(line, flush=True)
 
     def close(self) -> None:
         os.close(self._fd)
@@ -52,6 +55,7 @@ class AgentRunner:
         worktree_path: Path,
         state_manager: StateManager,
         log_path: Path,
+        log_to_stdout: bool = False,
     ) -> None:
         self._repo = repo
         self._pr_number = pr_number
@@ -59,6 +63,7 @@ class AgentRunner:
         self._worktree_path = worktree_path
         self._state_manager = state_manager
         self._log_path = log_path
+        self._log_to_stdout = log_to_stdout
 
     async def run_rebase(self, target_branch: str = "main") -> str | None:
         prompt = (
@@ -156,7 +161,7 @@ class AgentRunner:
             max_turns=max_turns,
         )
 
-        log = AgentLogger(self._log_path)
+        log = AgentLogger(self._log_path, tee_stdout=self._log_to_stdout)
         result_text: str | None = None
         try:
             log.write(f"[{_ts()}] === Agent started (session={session_id or 'new'}, cwd={self._worktree_path}) ===")

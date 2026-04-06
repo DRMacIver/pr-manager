@@ -53,6 +53,13 @@ def _main() -> None:
 
     sub.add_parser("list", help="List all managed repos")
 
+    fix_p = sub.add_parser("fix", help="Fix a single PR: rebase and loop until CI is green")
+    fix_p.add_argument("url", help="GitHub PR URL (e.g. https://github.com/owner/repo/pull/123)")
+    fix_p.add_argument(
+        "--poll-interval", type=int, default=60, metavar="N",
+        help="Seconds between CI status checks (default: 60)",
+    )
+
     args = parser.parse_args()
     state_manager = StateManager()
 
@@ -88,6 +95,10 @@ def _main() -> None:
             await state_manager.remove_repo(args.repo)
             print(f"Removed {args.repo}")
         asyncio.run(_remove())
+
+    elif args.command == "fix":
+        from .fix import run_fix
+        asyncio.run(run_fix(args.url, args.poll_interval))
 
     elif args.command == "list":
         async def _list() -> None:
