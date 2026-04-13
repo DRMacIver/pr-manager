@@ -5,21 +5,34 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ── System packages ──────────────────────────────────────────────────────────
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash-completion \
     build-essential \
     ca-certificates \
     clang \
     curl \
+    file \
     git \
+    htop \
+    iproute2 \
+    iputils-ping \
     jq \
     just \
+    less \
     lld \
     locales \
+    man-db \
+    nano \
     openssh-client \
     pkg-config \
+    procps \
+    psmisc \
+    ripgrep \
     rsync \
     sudo \
     tmux \
+    tree \
     unzip \
+    vim \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,7 +49,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Node.js LTS (needed by Claude Code) ─────────────────────────────────────
+# ── Node.js LTS ─────────────────────────────────────────────────────────────
 
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y nodejs \
@@ -83,11 +96,9 @@ USER dev
 # Go tools
 RUN go install honnef.co/go/tools/cmd/staticcheck@latest
 
-# ── Claude Code CLI ──────────────────────────────────────────────────────────
+# ── Claude Code CLI (native installer; lands in ~/.local/bin) ───────────────
 
-USER root
-RUN npm install -g @anthropic-ai/claude-code
-USER dev
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # ── Entrypoint setup ────────────────────────────────────────────────────────
 
