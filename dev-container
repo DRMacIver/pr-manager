@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Drop into a Docker dev container with this repo mounted at /workspace.
+# Launch pr-manager in a Docker dev container with this repo mounted at
+# /workspace.
 #
 # Usage:
 #   ./dev-container [name]
@@ -11,7 +12,8 @@
 #
 # Host SSH keys, gh CLI config, and gitconfig are copied into the home
 # volume on first start. Claude Code is installed in the image but not
-# logged in -- run `claude` inside the container to authenticate.
+# logged in -- pr-manager detects this on first launch and opens a
+# "claude-login" tmux window where you authenticate.
 
 set -euo pipefail
 
@@ -23,6 +25,20 @@ VOLUME="${PREFIX}-home-${NAME}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# pr-manager uses `uv run`, which would otherwise create /workspace/.venv
+# on the Linux container -- clashing with any macOS .venv left by running
+# `uv sync` on the host. Put the container venv on the persistent home
+# volume instead.
+UV_ENV_PATH="/home/dev/.cache/tooling-venv"
+
+run_pr_manager() {
+    exec docker exec -it \
+        -w /workspace \
+        -e "UV_PROJECT_ENVIRONMENT=${UV_ENV_PATH}" \
+        "$CONTAINER" \
+        uv run --project /workspace pr-manager run
+}
+
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     echo "Building $IMAGE_NAME (first run; this takes a while)..." >&2
     docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
@@ -31,12 +47,12 @@ fi
 running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)"
 
 if [ "$running" = "true" ]; then
-    exec docker exec -it -w /workspace "$CONTAINER" bash
+    run_pr_manager
 fi
 
 if [ "$running" = "false" ]; then
     docker start "$CONTAINER" >/dev/null
-    exec docker exec -it -w /workspace "$CONTAINER" bash
+    run_pr_manager
 fi
 
 mounts=(
@@ -70,4 +86,4 @@ for _ in $(seq 1 120); do
     sleep 0.5
 done
 
-exec docker exec -it -w /workspace "$CONTAINER" bash
+run_pr_manager

@@ -72,12 +72,14 @@ def _main() -> None:
             if not os.environ.get("TMUX"):
                 script_dir = os.path.dirname(os.path.abspath(__file__))
                 os.execvp("tmux", [
-                    "tmux", "new-session", "-s", "pr-manager", "--",
+                    "tmux", "new-session", "-A", "-s", "pr-manager", "--",
                     "uv", "run", "--project", script_dir + "/..",
                     "pr-manager", "run",
                     "--poll-interval", str(args.poll_interval),
                     "--recent-minutes", str(args.recent_minutes),
                 ])
+            from .claude_auth import ensure_logged_in
+            ensure_logged_in()
             from .tui import PRManagerApp
             asyncio.run(state_manager.load())
             PRManagerApp(state_manager, args.poll_interval, args.recent_minutes).run()
