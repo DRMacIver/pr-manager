@@ -5,13 +5,13 @@
 #   ./dev-container [name]
 #
 # Each <name> gets its own container and persistent /home/dev volume so
-# different contexts (e.g. work vs personal) stay isolated — separate
+# different contexts (e.g. work vs personal) stay isolated --
 # Claude logins, shell history, tool caches, and so on. The Docker image
 # is shared across names. Default name is "main".
 #
 # Host SSH keys, gh CLI config, and gitconfig are copied into the home
 # volume on first start. Claude Code is installed in the image but not
-# logged in — run `claude` inside the container to authenticate.
+# logged in -- run `claude` inside the container to authenticate.
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ VOLUME="${PREFIX}-home-${NAME}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-    echo "Building $IMAGE_NAME (first run; this takes a while)…" >&2
+    echo "Building $IMAGE_NAME (first run; this takes a while)..." >&2
     docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
@@ -54,7 +54,7 @@ if [ -f "$HOME/.gitconfig" ]; then
     mounts+=( -v "$HOME/.gitconfig:/mnt/host-gitconfig:ro" )
 fi
 
-echo "Starting $CONTAINER…" >&2
+echo "Starting $CONTAINER..." >&2
 docker run -d \
     --name "$CONTAINER" \
     --hostname "$CONTAINER" \
