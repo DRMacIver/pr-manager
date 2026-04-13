@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Drop into a Docker dev container with this repo mounted at /workspace.
+#
+# Usage:
+#   ./dev-container [name]
+#
+# Each <name> gets its own container and persistent /home/dev volume so
+# different contexts (e.g. work vs personal) stay isolated — separate
+# Claude logins, shell history, tool caches, and so on. The Docker image
+# is shared across names. Default name is "main".
+#
+# Host SSH keys, gh CLI config, and gitconfig are copied into the home
+# volume on first start. Claude Code is installed in the image but not
+# logged in — run `claude` inside the container to authenticate.
+
+set -euo pipefail
+
+IMAGE_NAME="tooling-dev"
+PREFIX="tooling-dev"
+NAME="${1:-main}"
+CONTAINER="${PREFIX}-${NAME}"
+VOLUME="${PREFIX}-home-${NAME}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    echo "Building $IMAGE_NAME (first run; this takes a while)…" >&2
+    docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+fi
+
+running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)"
+
+if [ "$running" = "true" ]; then
+    exec docker exec -it -w /workspace "$CONTAINER" bash
+fi
+
+if [ "$running" = "false" ]; then
+    docker start "$CONTAINER" >/dev/null
+    exec docker exec -it -w /workspace "$CONTAINER" bash
+fi
+
+mounts=(
+    -v "${VOLUME}:/home/dev"
+    -v "${SCRIPT_DIR}:/workspace"
+)
+
+if [ -d "$HOME/.ssh" ]; then
+    mounts+=( -v "$HOME/.ssh:/mnt/host-ssh:ro" )
+fi
+if [ -d "$HOME/.config/gh" ]; then
+    mounts+=( -v "$HOME/.config/gh:/mnt/host-gh-config:ro" )
+fi
+if [ -f "$HOME/.gitconfig" ]; then
+    mounts+=( -v "$HOME/.gitconfig:/mnt/host-gitconfig:ro" )
+fi
+
+echo "Starting $CONTAINER…" >&2
+docker run -d \
+    --name "$CONTAINER" \
+    --hostname "$CONTAINER" \
+    "${mounts[@]}" \
+    "$IMAGE_NAME" \
+    sleep infinity >/dev/null
+
+# Wait for entrypoint.sh to finish copying SSH keys / gh config / gitconfig.
+for _ in $(seq 1 120); do
+    if docker exec "$CONTAINER" test -f /tmp/.ready 2>/dev/null; then
+        break
+    fi
+    sleep 0.5
+done
+
+exec docker exec -it -w /workspace "$CONTAINER" bash
