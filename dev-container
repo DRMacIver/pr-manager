@@ -39,12 +39,26 @@ run_pr_manager() {
         uv run --project /workspace pr-manager run
 }
 
-if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-    echo "Building $IMAGE_NAME (first run; this takes a while)..." >&2
-    docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+# Rebuild on every launch so Dockerfile changes are picked up automatically.
+# .dockerignore keeps the build context tiny, so cache-hit builds are quick.
+echo "Building $IMAGE_NAME (uses cache)..." >&2
+docker build -t "$IMAGE_NAME" "$SCRIPT_DIR" >&2
+
+current_image_id="$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME")"
+container_image_id="$(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null || true)"
+
+# If the container exists but is bound to a stale image, recreate it.
+# Volumes (notably the home volume) are preserved across this.
+if [ -n "$container_image_id" ] && [ "$container_image_id" != "$current_image_id" ]; then
+    echo "Image has changed; recreating $CONTAINER (home volume preserved)..." >&2
+    docker rm -f "$CONTAINER" >/dev/null
+    container_image_id=""
 fi
 
-running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)"
+running=""
+if [ -n "$container_image_id" ]; then
+    running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER")"
+fi
 
 if [ "$running" = "true" ]; then
     run_pr_manager
