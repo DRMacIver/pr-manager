@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shlex
 import sys
 import traceback
 
@@ -71,18 +72,37 @@ def _main() -> None:
         else:
             if not os.environ.get("TMUX"):
                 script_dir = os.path.dirname(os.path.abspath(__file__))
-                os.execvp("tmux", [
-                    "tmux", "new-session", "-A", "-s", "pr-manager", "--",
+                inner_parts = [
                     "uv", "run", "--project", script_dir + "/..",
                     "pr-manager", "run",
                     "--poll-interval", str(args.poll_interval),
                     "--recent-minutes", str(args.recent_minutes),
+                ]
+                inner_cmd = " ".join(shlex.quote(p) for p in inner_parts)
+                # If pr-manager exits non-zero (a crash, or `sys.exit(1)` from
+                # the main() traceback handler), linger on the tmux window so
+                # the user can read the error before closing it. Mirrors the
+                # pattern used for child Claude windows in tui.py.
+                wrapped = (
+                    f'{inner_cmd} || {{ '
+                    f'rc=$?; echo; echo "pr-manager exited with code $rc"; '
+                    f'echo "Press enter to close..."; read _; '
+                    f'}}'
+                )
+                os.execvp("tmux", [
+                    "tmux", "new-session", "-A", "-s", "pr-manager", "--",
+                    "sh", "-c", wrapped,
                 ])
             from .claude_auth import ensure_logged_in
             ensure_logged_in()
             from .tui import PRManagerApp
             asyncio.run(state_manager.load())
-            PRManagerApp(state_manager, args.poll_interval, args.recent_minutes).run()
+            app = PRManagerApp(state_manager, args.poll_interval, args.recent_minutes)
+            app.run()
+            # Propagate textual's return_code so silent TUI failures surface
+            # via the shell wrapper around the tmux session (see above).
+            if app.return_code:
+                sys.exit(app.return_code)
 
     elif args.command == "add":
         async def _add() -> None:
