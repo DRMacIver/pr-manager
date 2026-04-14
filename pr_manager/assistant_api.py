@@ -130,3 +130,15 @@ class AssistantContext:
     async def remove_repo(self, repo: str) -> None:
         """Remove a repository from tracking."""
         await self._state_manager.remove_repo(repo)
+
+    async def hide_pr(self, repo: str, pr_number: int) -> None:
+        """Hide a PR from the displayed list (persists across restarts).
+        Local clones are left intact."""
+        task = self._active_tasks.pop((repo, pr_number), None)
+        if task and not task.done():
+            task.cancel()
+        await self._state_manager.hide_pr(repo, pr_number)
+
+    async def unhide_pr(self, repo: str, pr_number: int) -> None:
+        """Restore a previously hidden PR to the list."""
+        await self._state_manager.unhide_pr(repo, pr_number)
