@@ -106,7 +106,7 @@ async def start_container(
     # Check if container exists but is stopped.
     rc, _, _ = await run_cmd(["docker", "inspect", name], check=False)
     if rc == 0:
-        start_rc, _, start_err = await run_cmd(["docker", "start", name], check=False)
+        start_rc, _, _ = await run_cmd(["docker", "start", name], check=False)
         if start_rc == 0:
             return name
         # Container exists but won't start (e.g. created with missing image).
@@ -170,8 +170,13 @@ def _startup_script(ssh_url: str, branch: str, create_branch: bool, has_pristine
     else:
         checkout = f"cd ~/repo && git checkout {branch}"
 
+    # Always force origin back to SSH on every start so containers whose
+    # ~/repo volume predates this guarantee get auto-healed.
+    ensure_ssh = f"cd ~/repo && git remote set-url origin {ssh_url}"
+
     return (
         f"if [ ! -d ~/repo/.git ]; then {clone_cmd} && {checkout}; fi; "
+        f"{ensure_ssh}; "
         "touch /tmp/.ready; "
         "exec sleep infinity"
     )
