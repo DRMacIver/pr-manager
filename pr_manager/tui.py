@@ -113,7 +113,8 @@ class NewBranchScreen(ModalScreen):
             self.app.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
         except Exception as e:
             self.app.post_message(AppLogMessage(f"Failed to create branch: {e}", "error"))
-        self.dismiss()
+        if self in self.app.screen_stack:
+            self.dismiss()
 
     @on(Button.Pressed, "#nb-cancel")
     def _cancel(self) -> None:
@@ -158,7 +159,8 @@ class AddRepoScreen(ModalScreen):
         if "/" in repo:
             await self._state_manager.add_repo(repo)
             self.app.post_message(AppLogMessage(f"Added repo: {repo}", "info"))
-            self.dismiss()
+            if self in self.app.screen_stack:
+                self.dismiss()
         else:
             self.app.post_message(AppLogMessage(
                 "Invalid format — expected owner/repo", "error"
