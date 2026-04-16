@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +24,45 @@ from .git import (
     git_setup_pr_clone,
 )
 from .state import PRState, StateManager
+
+CLAUDE_SESSIONS_DIR = Path("~/.claude/sessions").expanduser()
+
+
+def has_active_claude_session(clone_path: Path) -> bool:
+    """Check whether a live Claude process is running inside *clone_path*.
+
+    Claude Code writes a JSON file per session to ``~/.claude/sessions/``.
+    Each file records the PID and cwd. We check every file to see if its
+    cwd is equal to (or inside) *clone_path* and the PID is still alive.
+
+    This survives pr-manager crashes because the session files are managed
+    by Claude, not by pr-manager.
+    """
+    if not CLAUDE_SESSIONS_DIR.is_dir():
+        return False
+    clone_str = str(clone_path)
+    for entry in CLAUDE_SESSIONS_DIR.iterdir():
+        if not entry.name.endswith(".json"):
+            continue
+        try:
+            data = json.loads(entry.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        cwd = data.get("cwd", "")
+        if cwd != clone_str and not cwd.startswith(clone_str + "/"):
+            continue
+        pid = data.get("pid")
+        if pid is None:
+            continue
+        try:
+            os.kill(pid, 0)  # signal 0: just check if process exists
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            # Process exists but we can't signal it — still counts as alive.
+            return True
+        return True
+    return False
 
 
 def _parse_pr_references(body: str, repo: str) -> list[int]:
@@ -122,6 +163,17 @@ class PRProcessor:
                 pr_state.error_message = "Recent human commits — skipping"
                 await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
                 self._status_cb(self._repo, pr_number, "human_changes", None)
+                return
+
+            # 1b. Skip if there is a live interactive Claude session in the clone.
+            if has_active_claude_session(clone_path):
+                pr_state.status = "human_changes"
+                pr_state.error_message = "Active Claude session — skipping"
+                await self._state_manager.upsert_pr_state(self._repo, str(pr_number), pr_state)
+                self._status_cb(self._repo, pr_number, "human_changes", None)
+                self._log_cb(
+                    f"PR #{pr_number} has a live Claude session in {clone_path} — skipping", "info",
+                )
                 return
 
             # 2. Rebase if behind target (parent branch or main).

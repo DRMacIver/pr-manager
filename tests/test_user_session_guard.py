@@ -4,20 +4,30 @@ When the user opens an interactive Claude session (via 'c' key), the poll loop
 must not start automated agent work on that PR until the user's session ends
 (i.e. the tmux window closes).
 
-The mechanism: action_open_claude_session stores a sentinel task in
-_active_tasks that stays alive while the tmux window exists. The poll loop's
-existing check (``if existing and not existing.done(): continue``) then skips
-the PR.
+Two layers of protection:
+
+1. **Sentinel task** (tui.py): action_open_claude_session stores a task in
+   _active_tasks that stays alive while the tmux window exists. The poll loop's
+   existing active-task check then skips the PR.
+
+2. **Session-file check** (processor.py): before doing any automated work, the
+   processor scans ``~/.claude/sessions/*.json`` for a live Claude process whose
+   cwd matches the PR clone path. This survives pr-manager crashes because the
+   session files are managed by Claude, not by pr-manager.
 """
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pr_manager import poll as poll_module
 from pr_manager import tui as tui_module
+from pr_manager.processor import has_active_claude_session
 from pr_manager.state import PRState, StateManager
 
 
@@ -129,3 +139,90 @@ async def test_watch_tmux_window_completes_on_tmux_error(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
     await tui_module.watch_tmux_window("claude-42")
+
+
+# ── has_active_claude_session tests ──────────────────────────────────────────
+
+
+@pytest.fixture
+def sessions_dir(tmp_path, monkeypatch):
+    d = tmp_path / "sessions"
+    d.mkdir()
+    monkeypatch.setattr("pr_manager.processor.CLAUDE_SESSIONS_DIR", d)
+    return d
+
+
+def test_detects_live_session_in_clone_path(sessions_dir):
+    """A session file whose cwd matches the clone path and whose PID is alive
+    should be detected."""
+    clone = Path("/fake/clone/pr-42")
+    session = {
+        "pid": os.getpid(),  # current process — guaranteed alive
+        "sessionId": "abc-123",
+        "cwd": str(clone),
+        "startedAt": 1776000000000,
+    }
+    (sessions_dir / f"{os.getpid()}.json").write_text(json.dumps(session))
+
+    assert has_active_claude_session(clone) is True
+
+
+def test_ignores_dead_session(sessions_dir):
+    """A session file with a non-existent PID should be ignored."""
+    clone = Path("/fake/clone/pr-42")
+    dead_pid = 2_000_000  # almost certainly not running
+    session = {
+        "pid": dead_pid,
+        "sessionId": "dead-session",
+        "cwd": str(clone),
+        "startedAt": 1776000000000,
+    }
+    (sessions_dir / f"{dead_pid}.json").write_text(json.dumps(session))
+
+    assert has_active_claude_session(clone) is False
+
+
+def test_ignores_session_in_different_directory(sessions_dir):
+    """A live session in a different cwd should not count."""
+    clone = Path("/fake/clone/pr-42")
+    other = Path("/some/other/dir")
+    session = {
+        "pid": os.getpid(),
+        "sessionId": "other-dir",
+        "cwd": str(other),
+        "startedAt": 1776000000000,
+    }
+    (sessions_dir / f"{os.getpid()}.json").write_text(json.dumps(session))
+
+    assert has_active_claude_session(clone) is False
+
+
+def test_no_sessions_dir(tmp_path, monkeypatch):
+    """If ~/.claude/sessions/ doesn't exist, return False gracefully."""
+    monkeypatch.setattr(
+        "pr_manager.processor.CLAUDE_SESSIONS_DIR",
+        tmp_path / "nonexistent",
+    )
+    assert has_active_claude_session(Path("/fake/clone")) is False
+
+
+def test_malformed_session_file_is_skipped(sessions_dir):
+    """Corrupt JSON in a session file should not cause a crash."""
+    clone = Path("/fake/clone/pr-42")
+    (sessions_dir / "99999.json").write_text("NOT JSON{{{")
+
+    assert has_active_claude_session(clone) is False
+
+
+def test_session_cwd_is_subdirectory_of_clone(sessions_dir):
+    """A session whose cwd is inside the clone path should be detected."""
+    clone = Path("/fake/clone/pr-42")
+    session = {
+        "pid": os.getpid(),
+        "sessionId": "sub-dir",
+        "cwd": str(clone / "src" / "lib"),
+        "startedAt": 1776000000000,
+    }
+    (sessions_dir / f"{os.getpid()}.json").write_text(json.dumps(session))
+
+    assert has_active_claude_session(clone) is True
