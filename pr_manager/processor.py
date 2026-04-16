@@ -41,6 +41,10 @@ def has_active_claude_session(clone_path: Path) -> bool:
     if not CLAUDE_SESSIONS_DIR.is_dir():
         return False
     clone_str = str(clone_path)
+    # Also check the resolved path in case clone_path is a symlink
+    # (e.g. pr-42 → branch-my-feature).
+    resolved_str = str(clone_path.resolve())
+    check_paths = {clone_str, resolved_str}
     for entry in CLAUDE_SESSIONS_DIR.iterdir():
         if not entry.name.endswith(".json"):
             continue
@@ -49,7 +53,7 @@ def has_active_claude_session(clone_path: Path) -> bool:
         except (json.JSONDecodeError, OSError):
             continue
         cwd = data.get("cwd", "")
-        if cwd != clone_str and not cwd.startswith(clone_str + "/"):
+        if not any(cwd == p or cwd.startswith(p + "/") for p in check_paths):
             continue
         pid = data.get("pid")
         if pid is None:

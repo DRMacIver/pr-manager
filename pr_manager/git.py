@@ -138,6 +138,13 @@ async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
     clone_path = get_clone_path(repo, pr_number)
     if clone_path.exists():
         return
+    # If a branch clone already exists (e.g. a local branch that just got a
+    # PR), symlink to it instead of creating a fresh clone.  This preserves
+    # any active Claude sessions or other processes in the original directory.
+    branch_clone = get_branch_clone_path(repo, branch)
+    if branch_clone.exists():
+        clone_path.symlink_to(branch_clone.resolve())
+        return
     await _clone_from_pristine(repo, clone_path)
     await run_cmd(["git", "checkout", branch], cwd=clone_path, check=False)
 

@@ -1,8 +1,11 @@
 """Tests for local branch → PR adoption.
 
-When a local branch gets a PR created for it, the poll loop should rename
-the existing branch clone directory to the PR clone path rather than
-leaving the old directory orphaned while the processor creates a new one.
+When a local branch gets a PR created for it, git_setup_pr_clone should
+detect the existing branch clone and symlink to it rather than creating
+a fresh clone.  This way:
+- Active processes in the branch clone are unaffected
+- The processor finds the PR clone path and uses it
+- has_active_claude_session works for both the branch and PR paths
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_manager import poll as poll_module
-from pr_manager.git import get_branch_clone_path, get_clone_path
+from pr_manager.git import get_branch_clone_path, get_clone_path, git_setup_pr_clone
 from pr_manager.state import PRState, StateManager
 
 
@@ -46,98 +49,52 @@ async def _fake_sleep(seconds: float) -> None:
 
 
 @pytest.mark.asyncio
-async def test_adopt_renames_branch_clone_to_pr_clone(state_path, repos_dir):
-    """When a local branch gets a PR, the branch clone directory should be
-    renamed to the PR clone path so the processor uses the existing work."""
-    sm = await _make_state_manager()
-    await sm.add_repo("foo/bar")
-    await sm.add_local_branch("foo/bar", "my-feature")
-
-    # Create the branch clone directory with some work in it.
+async def test_setup_pr_clone_symlinks_to_existing_branch_clone(repos_dir):
+    """If a branch clone already exists for this PR's branch,
+    git_setup_pr_clone should create a symlink rather than a fresh clone."""
     branch_clone = get_branch_clone_path("foo/bar", "my-feature")
     branch_clone.mkdir(parents=True)
-    (branch_clone / "work.txt").write_text("important work in progress")
+    (branch_clone / "work.txt").write_text("important work")
 
-    # gh pr list now returns a PR for this branch.
-    fake_prs = [
-        {"number": 42, "title": "My feature", "headRefName": "my-feature",
-         "createdAt": "2026-01-01T00:00:00Z"},
-    ]
-
-    host = MagicMock()
-    host._active_tasks = {}
-    host.on_log = MagicMock()
-    host.on_status_update = MagicMock()
-    host.on_pr_list = MagicMock()
-
-    with (
-        patch.object(poll_module, "gh_list_prs", AsyncMock(return_value=fake_prs)),
-        patch.object(poll_module, "git_update_pristine", AsyncMock()),
-        patch.object(poll_module, "PRProcessor", MagicMock()),
-        patch.object(poll_module.asyncio, "sleep", _fake_sleep),
-    ):
-        try:
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
-        except _Stop:
-            pass
+    # git_setup_pr_clone should detect the branch clone and symlink.
+    with patch("pr_manager.git._clone_from_pristine", AsyncMock()) as mock_clone:
+        await git_setup_pr_clone("foo/bar", 42, "my-feature")
+        # Should NOT have cloned from pristine.
+        mock_clone.assert_not_called()
 
     pr_clone = get_clone_path("foo/bar", 42)
-
-    # The branch clone should have been renamed to the PR clone path.
-    assert pr_clone.exists(), (
-        "PR clone directory should exist after adoption"
+    assert pr_clone.is_symlink(), (
+        "PR clone should be a symlink to the branch clone"
     )
-    assert (pr_clone / "work.txt").read_text() == "important work in progress", (
-        "Work in the branch clone should be preserved in the PR clone"
+    assert pr_clone.resolve() == branch_clone.resolve(), (
+        "PR clone symlink should point to the branch clone"
     )
-    assert not branch_clone.exists(), (
-        "Branch clone directory should no longer exist after rename"
-    )
-
-    # The local branch should be removed from tracking.
-    assert await sm.get_local_branches("foo/bar") == []
+    assert (pr_clone / "work.txt").read_text() == "important work"
 
 
 @pytest.mark.asyncio
-async def test_adopt_skips_rename_if_pr_clone_already_exists(state_path, repos_dir):
-    """If the PR clone already exists (e.g. from a prior run), don't
-    clobber it — just remove the local branch from tracking."""
-    sm = await _make_state_manager()
-    await sm.add_repo("foo/bar")
-    await sm.add_local_branch("foo/bar", "other-feat")
-
-    # Both directories exist.
-    branch_clone = get_branch_clone_path("foo/bar", "other-feat")
-    branch_clone.mkdir(parents=True)
-    (branch_clone / "branch.txt").write_text("branch work")
-
-    pr_clone = get_clone_path("foo/bar", 10)
-    pr_clone.mkdir(parents=True)
-    (pr_clone / "pr.txt").write_text("pr work")
-
-    fake_prs = [
-        {"number": 10, "title": "Other", "headRefName": "other-feat",
-         "createdAt": "2026-01-01T00:00:00Z"},
-    ]
-
-    host = MagicMock()
-    host._active_tasks = {}
-    host.on_log = MagicMock()
-    host.on_status_update = MagicMock()
-    host.on_pr_list = MagicMock()
-
+async def test_setup_pr_clone_creates_fresh_when_no_branch_clone(repos_dir):
+    """If no branch clone exists, git_setup_pr_clone should create a fresh
+    clone as before."""
     with (
-        patch.object(poll_module, "gh_list_prs", AsyncMock(return_value=fake_prs)),
-        patch.object(poll_module, "git_update_pristine", AsyncMock()),
-        patch.object(poll_module, "PRProcessor", MagicMock()),
-        patch.object(poll_module.asyncio, "sleep", _fake_sleep),
+        patch("pr_manager.git._clone_from_pristine", AsyncMock()) as mock_clone,
+        patch("pr_manager.git.run_cmd", AsyncMock()) as mock_run,
     ):
-        try:
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
-        except _Stop:
-            pass
+        await git_setup_pr_clone("foo/bar", 42, "my-feature")
+        mock_clone.assert_called_once()
 
-    # PR clone should be untouched.
-    assert (pr_clone / "pr.txt").read_text() == "pr work"
-    # Local branch removed from tracking.
-    assert await sm.get_local_branches("foo/bar") == []
+
+@pytest.mark.asyncio
+async def test_setup_pr_clone_skips_if_pr_clone_already_exists(repos_dir):
+    """If the PR clone already exists, do nothing."""
+    pr_clone = get_clone_path("foo/bar", 42)
+    pr_clone.mkdir(parents=True)
+    (pr_clone / "existing.txt").write_text("already here")
+
+    with patch("pr_manager.git._clone_from_pristine", AsyncMock()) as mock_clone:
+        await git_setup_pr_clone("foo/bar", 42, "my-feature")
+        mock_clone.assert_not_called()
+
+    # Should be a real directory, not a symlink.
+    assert not pr_clone.is_symlink()
+    assert (pr_clone / "existing.txt").read_text() == "already here"

@@ -226,3 +226,22 @@ def test_session_cwd_is_subdirectory_of_clone(sessions_dir):
     (sessions_dir / f"{os.getpid()}.json").write_text(json.dumps(session))
 
     assert has_active_claude_session(clone) is True
+
+
+def test_detects_session_through_symlink(sessions_dir, tmp_path):
+    """If clone_path is a symlink (e.g. pr-42 → branch-my-feature), and
+    the session's cwd is the symlink target, it should still be detected."""
+    real_dir = tmp_path / "branch-my-feature"
+    real_dir.mkdir()
+    symlink = tmp_path / "pr-42"
+    symlink.symlink_to(real_dir)
+
+    session = {
+        "pid": os.getpid(),
+        "sessionId": "symlink-test",
+        "cwd": str(real_dir),
+        "startedAt": 1776000000000,
+    }
+    (sessions_dir / f"{os.getpid()}.json").write_text(json.dumps(session))
+
+    assert has_active_claude_session(symlink) is True
