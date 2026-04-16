@@ -4,6 +4,7 @@ import asyncio
 from typing import Callable, Optional, Protocol
 
 from .git import (
+    get_branch_clone_path,
     get_clone_path,
     gh_list_prs,
     git_update_pristine,
@@ -75,11 +76,24 @@ async def poll_loop(
                                 )
 
                     # Adopt local branches that now have PRs.
-                    pr_branches = {p["headRefName"] for p in prs}
+                    pr_by_branch = {p["headRefName"]: p for p in prs}
                     for branch in await state_manager.get_local_branches(repo):
-                        if branch in pr_branches:
+                        pr_data = pr_by_branch.get(branch)
+                        if pr_data is not None:
+                            # Rename the branch clone to the PR clone path so
+                            # the processor picks up the existing working dir.
+                            branch_clone = get_branch_clone_path(repo, branch)
+                            pr_clone = get_clone_path(repo, pr_data["number"])
+                            if branch_clone.exists() and not pr_clone.exists():
+                                branch_clone.rename(pr_clone)
+                                host.on_log(
+                                    f"Branch {branch} ({repo}) now has PR #{pr_data['number']}"
+                                    f" — renamed clone to {pr_clone.name}",
+                                    "info",
+                                )
+                            else:
+                                host.on_log(f"Branch {branch} ({repo}) now has a PR — adopted", "info")
                             await state_manager.remove_local_branch(repo, branch)
-                            host.on_log(f"Branch {branch} ({repo}) now has a PR — adopted", "info")
 
                     # Ensure all known PRs have stub state so they appear immediately.
                     for pr_data in prs:
