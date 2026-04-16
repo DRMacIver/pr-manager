@@ -51,8 +51,8 @@ class AppState:
     pr_state: dict[str, dict[str, dict]] = field(default_factory=dict)
     # repo -> list of branch names that don't have PRs yet
     local_branches: dict[str, list[str]] = field(default_factory=dict)
-    # repo -> PR numbers the user has hidden from the list
-    hidden_prs: dict[str, list[int]] = field(default_factory=dict)
+    # repo -> PR numbers the user has disabled (still listed, not processed)
+    disabled_prs: dict[str, list[int]] = field(default_factory=dict)
     settings: Settings = field(default_factory=Settings)
 
 
@@ -90,9 +90,11 @@ class StateManager:
                     repos=data.get("repos", []),
                     pr_state=data.get("pr_state", {}),
                     local_branches=data.get("local_branches", {}),
-                    hidden_prs={
+                    disabled_prs={
                         r: [int(n) for n in nums]
-                        for r, nums in data.get("hidden_prs", {}).items()
+                        for r, nums in (
+                            data.get("disabled_prs") or data.get("hidden_prs") or {}
+                        ).items()
                     },
                     settings=_dict_to_settings(data.get("settings", {})),
                 )
@@ -108,7 +110,7 @@ class StateManager:
                 "repos": self._state.repos,
                 "pr_state": self._state.pr_state,
                 "local_branches": self._state.local_branches,
-                "hidden_prs": self._state.hidden_prs,
+                "disabled_prs": self._state.disabled_prs,
                 "settings": asdict(self._state.settings),
             },
             indent=2,
@@ -184,32 +186,31 @@ class StateManager:
         async with self._lock:
             return {r: list(bs) for r, bs in self._state.local_branches.items()}
 
-    async def hide_pr(self, repo: str, pr_number: int) -> None:
-        """Hide a PR from the displayed list and clear its cached state.
-        The hidden flag is persisted so the PR stays hidden across restarts."""
+    async def disable_pr(self, repo: str, pr_number: int) -> None:
+        """Disable automated processing for a PR.
+        The PR remains visible in the display list but the processor skips it."""
         async with self._lock:
-            hidden = self._state.hidden_prs.setdefault(repo, [])
-            if pr_number not in hidden:
-                hidden.append(pr_number)
-            self._state.pr_state.get(repo, {}).pop(str(pr_number), None)
+            disabled = self._state.disabled_prs.setdefault(repo, [])
+            if pr_number not in disabled:
+                disabled.append(pr_number)
             self._save_sync()
 
-    async def unhide_pr(self, repo: str, pr_number: int) -> None:
+    async def enable_pr(self, repo: str, pr_number: int) -> None:
         async with self._lock:
-            hidden = self._state.hidden_prs.get(repo, [])
-            if pr_number in hidden:
-                hidden.remove(pr_number)
-                if not hidden:
-                    self._state.hidden_prs.pop(repo, None)
+            disabled = self._state.disabled_prs.get(repo, [])
+            if pr_number in disabled:
+                disabled.remove(pr_number)
+                if not disabled:
+                    self._state.disabled_prs.pop(repo, None)
                 self._save_sync()
 
-    async def is_hidden(self, repo: str, pr_number: int) -> bool:
+    async def is_disabled(self, repo: str, pr_number: int) -> bool:
         async with self._lock:
-            return pr_number in self._state.hidden_prs.get(repo, [])
+            return pr_number in self._state.disabled_prs.get(repo, [])
 
-    async def get_hidden_prs(self, repo: str) -> list[int]:
+    async def get_disabled_prs(self, repo: str) -> list[int]:
         async with self._lock:
-            return list(self._state.hidden_prs.get(repo, []))
+            return list(self._state.disabled_prs.get(repo, []))
 
     async def get_settings(self) -> Settings:
         async with self._lock:

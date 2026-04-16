@@ -406,7 +406,7 @@ class PRManagerApp(App):
         Binding("s", "settings", "settings"),
         Binding("a", "add_repo", "add repo"),
         Binding("r", "remove_repo", "remove repo"),
-        Binding("x", "hide_pr", "hide PR"),
+        Binding("x", "toggle_disabled", "disable/enable PR"),
         Binding("q", "quit", "quit"),
     ]
 
@@ -708,24 +708,27 @@ class PRManagerApp(App):
         self._refresh_table()
         self.post_message(AppLogMessage(f"Removed repo: {pr.repo}", "info"))
 
-    async def action_hide_pr(self) -> None:
+    async def action_toggle_disabled(self) -> None:
         pr = self._get_selected_pr()
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
         if pr.number == 0:
             await self._state_manager.remove_local_branch(pr.repo, pr.branch)
+            self._display_prs = [
+                p for p in self._display_prs
+                if not (p.repo == pr.repo and p.number == pr.number and p.branch == pr.branch)
+            ]
             msg = f"Removed local branch {pr.branch} ({pr.repo}) from list"
+        elif await self._state_manager.is_disabled(pr.repo, pr.number):
+            await self._state_manager.enable_pr(pr.repo, pr.number)
+            msg = f"Enabled PR #{pr.number} ({pr.repo})"
         else:
             task = self._active_tasks.pop((pr.repo, pr.number), None)
             if task and not task.done():
                 task.cancel()
-            await self._state_manager.hide_pr(pr.repo, pr.number)
-            msg = f"Hidden PR #{pr.number} ({pr.repo}) from list"
-        self._display_prs = [
-            p for p in self._display_prs
-            if not (p.repo == pr.repo and p.number == pr.number and p.branch == pr.branch)
-        ]
+            await self._state_manager.disable_pr(pr.repo, pr.number)
+            msg = f"Disabled PR #{pr.number} ({pr.repo})"
         self._refresh_table()
         self.post_message(AppLogMessage(msg, "info"))
 

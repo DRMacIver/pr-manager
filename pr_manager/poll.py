@@ -50,17 +50,14 @@ async def poll_loop(
                         host.on_log(f"Failed to fetch {repo}: {e}", "error")
                         continue
 
-                    # Drop hidden-list entries for PRs no longer on GitHub so the
-                    # hidden list doesn't grow unbounded.
-                    visible_pr_numbers = {p["number"] for p in prs}
-                    for hidden_num in await state_manager.get_hidden_prs(repo):
-                        if hidden_num not in visible_pr_numbers:
-                            await state_manager.unhide_pr(repo, hidden_num)
+                    # Drop disabled-list entries for PRs no longer on GitHub so
+                    # the disabled list doesn't grow unbounded.
+                    all_pr_numbers = {p["number"] for p in prs}
+                    for disabled_num in await state_manager.get_disabled_prs(repo):
+                        if disabled_num not in all_pr_numbers:
+                            await state_manager.enable_pr(repo, disabled_num)
 
-                    # Filter hidden PRs out of the working set: no stub state,
-                    # no processor task, no display row.
-                    hidden = set(await state_manager.get_hidden_prs(repo))
-                    prs = [p for p in prs if p["number"] not in hidden]
+                    disabled = set(await state_manager.get_disabled_prs(repo))
 
                     # Remove state + clones for PRs no longer in the list.
                     current_numbers = {str(p["number"]) for p in prs}
@@ -98,6 +95,8 @@ async def poll_loop(
 
                     for pr_data in prs:
                         pr_number: int = pr_data["number"]
+                        if pr_number in disabled:
+                            continue
                         key = (repo, pr_number)
                         existing = host._active_tasks.get(key)
                         if existing and not existing.done():

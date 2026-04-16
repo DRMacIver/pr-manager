@@ -57,31 +57,26 @@ async def _fake_sleep(seconds: float) -> None:
 
 
 @pytest.mark.asyncio
-async def test_hidden_pr_clone_not_deleted_when_still_on_github(state_path, tmp_path):
-    """A PR that is hidden but still open on GitHub must NOT have its clone
-    deleted or its state removed by the cleanup loop."""
+async def test_disabled_pr_clone_not_deleted_when_still_on_github(state_path, tmp_path):
+    """A PR that is disabled but still open on GitHub must NOT have its clone
+    deleted by the cleanup loop."""
     sm = await _make_state_manager()
     await sm.add_repo("foo/bar")
-    # PR #50 has state and is hidden.
-    await sm.upsert_pr_state("foo/bar", "50", PRState(title="hidden-open", branch="h"))
-    await sm.hide_pr("foo/bar", 50)
-    # Also re-add the state that hide_pr clears, to simulate the state being
-    # present from a prior poll cycle before the user hid it.
-    # Actually hide_pr clears state, so let's just track that remove_clone is
-    # NOT called for this PR.  The key invariant: even if state existed, the
-    # clone must not be deleted.
+    await sm.upsert_pr_state("foo/bar", "50", PRState(title="disabled-open", branch="h"))
+    await sm.disable_pr("foo/bar", 50)
 
     # PR #50 is still on GitHub:
     fake_prs = [
-        {"number": 50, "title": "hidden-open", "headRefName": "h", "createdAt": "2026-01-01T00:00:00Z"},
+        {"number": 50, "title": "disabled-open", "headRefName": "h", "createdAt": "2026-01-01T00:00:00Z"},
         {"number": 51, "title": "visible", "headRefName": "v", "createdAt": "2026-01-01T00:00:00Z"},
     ]
 
     host = _make_host()
     remove_clone_calls: list[Path] = []
 
-    def tracking_remove_clone(p: Path) -> None:
+    def tracking_remove_clone(p: Path) -> bool:
         remove_clone_calls.append(p)
+        return True
 
     with (
         patch.object(poll_module, "gh_list_prs", AsyncMock(return_value=fake_prs)),
@@ -95,11 +90,11 @@ async def test_hidden_pr_clone_not_deleted_when_still_on_github(state_path, tmp_
         except _Stop:
             pass
 
-    # The clone for hidden PR #50 must NOT have been removed.
+    # The clone for disabled PR #50 must NOT have been removed.
     clone_50 = poll_module.get_clone_path("foo/bar", 50)
     assert clone_50 not in remove_clone_calls, (
-        f"remove_clone was called for hidden PR #50 — "
-        f"hidden PRs still on GitHub must not be cleaned up"
+        f"remove_clone was called for disabled PR #50 — "
+        f"disabled PRs still on GitHub must not be cleaned up"
     )
 
 
