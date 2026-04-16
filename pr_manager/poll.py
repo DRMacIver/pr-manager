@@ -27,6 +27,7 @@ async def poll_loop(
     state_manager: StateManager,
     poll_interval_minutes: int,
     recent_minutes: int,
+    nudge: Optional[asyncio.Event] = None,
 ) -> None:
     while True:
         try:
@@ -150,4 +151,11 @@ async def poll_loop(
                 sleep_minutes = 1
         except Exception:
             pass
-        await asyncio.sleep(sleep_minutes * 60)
+        if nudge is not None:
+            nudge.clear()
+            try:
+                await asyncio.wait_for(nudge.wait(), timeout=sleep_minutes * 60)
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(sleep_minutes * 60)

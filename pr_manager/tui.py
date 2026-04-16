@@ -424,6 +424,7 @@ class PRManagerApp(App):
         self._active_tasks: dict[tuple[str, int], asyncio.Task] = {}
         self._spinner_idx = 0
         self._poll_task: Optional[asyncio.Task] = None
+        self._poll_nudge = asyncio.Event()
         self._assistant: Optional[Any] = None
         self._assistant_busy = False
 
@@ -443,7 +444,8 @@ class PRManagerApp(App):
         table.add_columns("PR#", "Repo", "Branch", "Status", "Review", "Activity", "Age")
         host = TuiPollHost(self)
         self._poll_task = asyncio.create_task(
-            poll_loop(host, self._state_manager, self._poll_interval, self._recent_minutes)
+            poll_loop(host, self._state_manager, self._poll_interval, self._recent_minutes,
+                      nudge=self._poll_nudge)
         )
         self.set_interval(0.12, self._tick_spinner)
 
@@ -722,6 +724,7 @@ class PRManagerApp(App):
             msg = f"Removed local branch {pr.branch} ({pr.repo}) from list"
         elif await self._state_manager.is_disabled(pr.repo, pr.number):
             await self._state_manager.enable_pr(pr.repo, pr.number)
+            self._poll_nudge.set()
             msg = f"Enabled PR #{pr.number} ({pr.repo})"
         else:
             task = self._active_tasks.pop((pr.repo, pr.number), None)
