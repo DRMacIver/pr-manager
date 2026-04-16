@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from .constants import REPOS_DIR, LOGS_DIR
 
@@ -59,6 +63,7 @@ def get_log_path(repo: str, pr_number: int) -> Path:
 async def gh_list_prs(repo: str) -> list[dict]:
     _, out, _ = await run_cmd([
         "gh", "pr", "list", "--repo", repo, "--state", "open", "--author", "@me",
+        "--limit", "300",
         "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,reviewDecision,comments,reviews,body",
     ])
     return json.loads(out) if out else []
@@ -145,10 +150,27 @@ async def git_create_branch_clone(repo: str, branch: str) -> Path:
     return clone_path
 
 
-def remove_clone(clone_path: Path) -> None:
-    """Remove a working clone directory."""
-    if clone_path.exists():
-        shutil.rmtree(clone_path)
+_ONE_DAY = 86400
+
+
+def remove_clone(clone_path: Path) -> bool:
+    """Remove a working clone directory.
+
+    Returns True if the directory was deleted, False if it was kept.
+    As a safety net, refuses to delete directories modified within the
+    last day — logs a warning instead.
+    """
+    if not clone_path.exists():
+        return True
+    age = time.time() - clone_path.stat().st_mtime
+    if age < _ONE_DAY:
+        log.warning(
+            "Refusing to delete %s — modified %.1f hours ago (< 24h)",
+            clone_path, age / 3600,
+        )
+        return False
+    shutil.rmtree(clone_path)
+    return True
 
 
 # ── Git queries & operations (run in working clones) ────────────────────────

@@ -66,9 +66,15 @@ async def poll_loop(
                     current_numbers = {str(p["number"]) for p in prs}
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
                         if old_num not in current_numbers:
-                            remove_clone(get_clone_path(repo, int(old_num)))
-                            await state_manager.remove_pr(repo, old_num)
-                            host.on_log(f"Removed PR #{old_num} ({repo}) from state", "info")
+                            deleted = remove_clone(get_clone_path(repo, int(old_num)))
+                            if deleted:
+                                await state_manager.remove_pr(repo, old_num)
+                                host.on_log(f"Removed PR #{old_num} ({repo}) from state", "info")
+                            else:
+                                host.on_log(
+                                    f"PR #{old_num} ({repo}) gone from gh pr list but clone is recent — keeping state",
+                                    "warn",
+                                )
 
                     # Adopt local branches that now have PRs.
                     pr_branches = {p["headRefName"] for p in prs}
