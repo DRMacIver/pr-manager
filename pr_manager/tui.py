@@ -21,6 +21,31 @@ from .git import get_branch_clone_path, get_clone_path, get_log_path, git_create
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
 
+_TMUX_WATCH_INTERVAL = 15  # seconds between tmux window checks
+
+
+async def watch_tmux_window(window_name: str) -> None:
+    """Block until the named tmux window no longer exists.
+
+    Used as a sentinel task in ``_active_tasks`` so the poll loop skips PRs
+    that have an interactive Claude session open.
+    """
+    try:
+        while True:
+            await asyncio.sleep(_TMUX_WATCH_INTERVAL)
+            rc, out, _ = await run_cmd(
+                ["tmux", "list-windows", "-F", "#W"],
+                check=False,
+            )
+            if rc != 0:
+                return
+            if window_name not in out.strip().splitlines():
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
+
 
 # ── Textual messages ─────────────────────────────────────────────────────────
 
@@ -640,19 +665,25 @@ class PRManagerApp(App):
             cmd += f" --resume {session_id}"
         if settings.claude_permission_mode != "default":
             cmd += f" --permission-mode {settings.claude_permission_mode}"
+        window_name = f"claude-{pr.number or pr.branch}"
         # Wrap so if claude crashes the error stays visible.
         wrapped = f'{cmd} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
         self.post_message(AppLogMessage(f"Running: {cmd}", "info"))
         rc, _, stderr = await run_cmd([
             "tmux", "new-window",
             "-c", str(worktree),
-            "-n", f"claude-{pr.number or pr.branch}",
+            "-n", window_name,
             "sh", "-c", wrapped,
         ], check=False)
         if rc != 0:
             self.post_message(AppLogMessage(
                 f"tmux new-window failed (rc={rc}): {stderr}", "error"
             ))
+            return
+        # Install a sentinel task so the poll loop skips this PR while the
+        # user's interactive Claude session is open.
+        sentinel = asyncio.create_task(watch_tmux_window(window_name))
+        self._active_tasks[key] = sentinel
 
     async def action_new_branch(self) -> None:
         if not self._check_tmux():
