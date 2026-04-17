@@ -1,6 +1,7 @@
 """Tests for the poll-loop nudge mechanism.
 
-When the user re-enables a disabled PR, the poll loop should wake up
+An `asyncio.Event` passed to `poll_loop` can be set from elsewhere in
+the app (e.g. after adopting a new local branch) to wake the loop up
 immediately rather than waiting for the full sleep interval.
 """
 from __future__ import annotations

@@ -28,8 +28,9 @@ _TMUX_WATCH_INTERVAL = 15  # seconds between tmux window checks
 async def watch_tmux_window(window_name: str) -> None:
     """Block until the named tmux window no longer exists.
 
-    Used as a sentinel task in ``_active_tasks`` so the poll loop skips PRs
-    that have an interactive Claude session open.
+    Used as a sentinel task in ``_active_tasks``; while the task is alive
+    the TUI overlays ``fixing`` on the PR's row (for a `f` fix session)
+    or otherwise treats the PR as having a live interactive session.
     """
     try:
         while True:

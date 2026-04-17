@@ -52,3 +52,14 @@ async def test_compute_pr_status_maps_no_checks():
     ):
         status = await poll_module.compute_pr_status("foo/bar", pr_data, Path("/tmp/fake"))
     assert status == "no_checks"
+
+
+@pytest.mark.asyncio
+async def test_compute_pr_status_maps_gh_pending():
+    pr_data = {"number": 1, "headRefName": "feat", "baseRefName": "main"}
+    with (
+        patch.object(poll_module, "git_commits_behind", AsyncMock(return_value=0)),
+        patch.object(poll_module, "gh_pr_check_status", AsyncMock(return_value=("pending", ""))),
+    ):
+        status = await poll_module.compute_pr_status("foo/bar", pr_data, Path("/tmp/fake"))
+    assert status == "pending"
