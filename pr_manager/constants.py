@@ -9,13 +9,13 @@ SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # (icon, rich style) per status
 STATUS_STYLE: dict[str, tuple[str, str]] = {
-    "idle":          ("○", "dim"),
-    "pending":       ("◌", "cyan"),
-    "rebasing":      ("◉", "yellow"),
-    "fixing_ci":     ("◉", "yellow"),
-    "green":         ("✓", "green"),
-    "error":         ("✗", "red bold"),
-    "blocked":       ("⏸", "yellow"),
-    "human_changes": ("⚠", "blue"),
-    "local":         ("◇", "magenta"),
+    "idle":      ("○", "dim"),
+    "pending":   ("◌", "cyan"),
+    "behind":    ("↓", "yellow"),
+    "no_checks": ("·", "dim"),
+    "failing":   ("✗", "red bold"),
+    "fixing":    ("◉", "yellow"),
+    "green":     ("✓", "green"),
+    "error":     ("!", "red bold"),
+    "local":     ("◇", "magenta"),
 }
