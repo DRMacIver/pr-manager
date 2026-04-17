@@ -6,12 +6,18 @@ A terminal UI for managing GitHub pull requests across multiple repos using Clau
 
 ## What it does
 
-pr-manager polls your open GitHub PRs and automatically:
+pr-manager polls your open GitHub PRs and shows their current state:
 
-- **Rebases** branches that are behind main (via a Claude agent that handles conflicts)
-- **Fixes failing CI** by having a Claude agent examine failures and commit fixes
-- **Reattributes bot commits** when a GitHub bot push doesn't trigger Actions (amends the commit author and force-pushes to restart CI)
-- **Tracks check status** — shows whether checks are green, pending, failing, or absent
+- **Rebase / CI status** — shows whether each PR is behind its base,
+  waiting on checks, failing, or green.
+- **Review status** — draft, approved, changes requested, comment
+  activity at a glance.
+
+pr-manager never modifies your PRs on its own. When you want it to
+act, invoke the fix command explicitly (TUI `f` or
+`pr-manager fix <url>`). The fix command runs a Claude agent that
+rebases onto the PR's base, fixes failing CI, and re-attributes bot
+commits, looping until CI is green.
 
 It also provides shortcuts for interactive work:
 
@@ -68,9 +74,11 @@ uv run pr-manager remove owner/repo
 | `o` | Open a terminal in the PR's working directory |
 | `v` | View agent log (tail -f in a new tmux window) |
 | `c` | Open an interactive Claude session (resumes if one exists) |
+| `f` | Fix selected PR (opens tmux window running `pr-manager fix`) |
 | `s` | Settings (Claude permission mode) |
 | `a` | Add a repo |
 | `r` | Remove a repo |
+| `x` | Remove selected local branch from the list |
 | `q` | Quit |
 
 ### Options
