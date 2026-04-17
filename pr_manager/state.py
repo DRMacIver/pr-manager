@@ -78,6 +78,12 @@ class StateManager:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._state = AppState()
+        self._nudge: Optional[asyncio.Event] = None
+
+    def set_nudge(self, event: asyncio.Event) -> None:
+        """Register an event to be set whenever the tracked repo list
+        changes, so a running poll loop can wake up immediately."""
+        self._nudge = event
 
     async def load(self) -> None:
         async with self._lock:
@@ -114,6 +120,8 @@ class StateManager:
             if repo not in self._state.repos:
                 self._state.repos.append(repo)
                 self._save_sync()
+        if self._nudge is not None:
+            self._nudge.set()
 
     async def remove_repo(self, repo: str) -> None:
         async with self._lock:

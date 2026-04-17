@@ -428,6 +428,7 @@ class PRManagerApp(App):
         self._spinner_idx = 0
         self._poll_task: Optional[asyncio.Task] = None
         self._poll_nudge = asyncio.Event()
+        self._state_manager.set_nudge(self._poll_nudge)
         self._assistant: Optional[Any] = None
         self._assistant_busy = False
 

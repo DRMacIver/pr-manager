@@ -91,3 +91,25 @@ async def test_nudge_event_interrupts_poll_sleep(state_path):
     assert gap < 1.0, (
         f"Gap between poll cycles was {gap:.2f}s — expected <1s with nudge"
     )
+
+
+@pytest.mark.asyncio
+async def test_add_repo_sets_registered_nudge_event(state_path):
+    """Adding a repo should set the registered nudge event so the poll
+    loop notices the new repo without waiting for the next interval."""
+    sm = await _make_state_manager()
+    nudge = asyncio.Event()
+    sm.set_nudge(nudge)
+
+    assert not nudge.is_set()
+    await sm.add_repo("foo/bar")
+    assert nudge.is_set(), "add_repo should set the registered nudge event"
+
+
+@pytest.mark.asyncio
+async def test_add_repo_without_nudge_does_not_crash(state_path):
+    """When no nudge is registered (e.g. the CLI `add` command) add_repo
+    must still work — set_nudge is optional."""
+    sm = await _make_state_manager()
+    await sm.add_repo("foo/bar")
+    assert "foo/bar" in await sm.get_repos()
