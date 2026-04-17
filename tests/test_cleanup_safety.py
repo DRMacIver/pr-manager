@@ -1,14 +1,14 @@
 """Tests for PR cleanup safety.
 
 The poll loop removes state and clones for PRs that are no longer in the
-``gh pr list`` response.  This cleanup has two bugs and a missing safety net:
+``gh pr list`` response.  Two safeguards that must not regress:
 
-1. Hidden PRs are filtered out of ``prs`` *before* ``current_numbers`` is
-   built, so a hidden-but-open PR gets its clone deleted.
-2. ``gh pr list`` defaults to 30 results — if the user has more open PRs,
-   the extras are silently treated as closed and nuked.
-3. ``remove_clone`` unconditionally calls ``shutil.rmtree`` with no sanity
-   check on how recently the directory was used.
+1. ``gh pr list`` defaults to 30 results — if the user has more open PRs,
+   the extras must not be silently treated as closed and their clones
+   removed.
+2. ``remove_clone`` must refuse to ``shutil.rmtree`` a directory whose
+   mtime is less than a day old — a safety net against incorrect
+   cleanup.
 """
 from __future__ import annotations
 

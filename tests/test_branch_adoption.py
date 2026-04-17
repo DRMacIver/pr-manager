@@ -4,8 +4,7 @@ When a local branch gets a PR created for it, git_setup_pr_clone should
 detect the existing branch clone and symlink to it rather than creating
 a fresh clone.  This way:
 - Active processes in the branch clone are unaffected
-- The processor finds the PR clone path and uses it
-- has_active_claude_session works for both the branch and PR paths
+- The PR clone path reuses the branch clone's working state
 """
 from __future__ import annotations
 
