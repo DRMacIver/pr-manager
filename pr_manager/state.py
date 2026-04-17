@@ -51,8 +51,6 @@ class AppState:
     pr_state: dict[str, dict[str, dict]] = field(default_factory=dict)
     # repo -> list of branch names that don't have PRs yet
     local_branches: dict[str, list[str]] = field(default_factory=dict)
-    # repo -> PR numbers the user has disabled (still listed, not processed)
-    disabled_prs: dict[str, list[int]] = field(default_factory=dict)
     settings: Settings = field(default_factory=Settings)
 
 
@@ -86,16 +84,12 @@ class StateManager:
         async with self._lock:
             if STATE_PATH.exists():
                 data = json.loads(STATE_PATH.read_text())
+                # Legacy `disabled_prs` / `hidden_prs` keys are ignored
+                # silently for forward-compat with old state files.
                 self._state = AppState(
                     repos=data.get("repos", []),
                     pr_state=data.get("pr_state", {}),
                     local_branches=data.get("local_branches", {}),
-                    disabled_prs={
-                        r: [int(n) for n in nums]
-                        for r, nums in (
-                            data.get("disabled_prs") or data.get("hidden_prs") or {}
-                        ).items()
-                    },
                     settings=_dict_to_settings(data.get("settings", {})),
                 )
             else:
@@ -110,7 +104,6 @@ class StateManager:
                 "repos": self._state.repos,
                 "pr_state": self._state.pr_state,
                 "local_branches": self._state.local_branches,
-                "disabled_prs": self._state.disabled_prs,
                 "settings": asdict(self._state.settings),
             },
             indent=2,
@@ -185,32 +178,6 @@ class StateManager:
     async def get_all_local_branches(self) -> dict[str, list[str]]:
         async with self._lock:
             return {r: list(bs) for r, bs in self._state.local_branches.items()}
-
-    async def disable_pr(self, repo: str, pr_number: int) -> None:
-        """Disable automated processing for a PR.
-        The PR remains visible in the display list but the processor skips it."""
-        async with self._lock:
-            disabled = self._state.disabled_prs.setdefault(repo, [])
-            if pr_number not in disabled:
-                disabled.append(pr_number)
-            self._save_sync()
-
-    async def enable_pr(self, repo: str, pr_number: int) -> None:
-        async with self._lock:
-            disabled = self._state.disabled_prs.get(repo, [])
-            if pr_number in disabled:
-                disabled.remove(pr_number)
-                if not disabled:
-                    self._state.disabled_prs.pop(repo, None)
-                self._save_sync()
-
-    async def is_disabled(self, repo: str, pr_number: int) -> bool:
-        async with self._lock:
-            return pr_number in self._state.disabled_prs.get(repo, [])
-
-    async def get_disabled_prs(self, repo: str) -> list[int]:
-        async with self._lock:
-            return list(self._state.disabled_prs.get(repo, []))
 
     async def get_settings(self) -> Settings:
         async with self._lock:

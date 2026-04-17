@@ -51,15 +51,6 @@ async def poll_loop(
                         host.on_log(f"Failed to fetch {repo}: {e}", "error")
                         continue
 
-                    # Drop disabled-list entries for PRs no longer on GitHub so
-                    # the disabled list doesn't grow unbounded.
-                    all_pr_numbers = {p["number"] for p in prs}
-                    for disabled_num in await state_manager.get_disabled_prs(repo):
-                        if disabled_num not in all_pr_numbers:
-                            await state_manager.enable_pr(repo, disabled_num)
-
-                    disabled = set(await state_manager.get_disabled_prs(repo))
-
                     # Remove state + clones for PRs no longer in the list.
                     current_numbers = {str(p["number"]) for p in prs}
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
@@ -96,8 +87,6 @@ async def poll_loop(
 
                     for pr_data in prs:
                         pr_number: int = pr_data["number"]
-                        if pr_number in disabled:
-                            continue
                         key = (repo, pr_number)
                         existing = host._active_tasks.get(key)
                         if existing and not existing.done():

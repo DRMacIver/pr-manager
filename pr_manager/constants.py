@@ -17,6 +17,5 @@ STATUS_STYLE: dict[str, tuple[str, str]] = {
     "error":         ("✗", "red bold"),
     "blocked":       ("⏸", "yellow"),
     "human_changes": ("⚠", "blue"),
-    "disabled":      ("⊘", "dim"),
     "local":         ("◇", "magenta"),
 }

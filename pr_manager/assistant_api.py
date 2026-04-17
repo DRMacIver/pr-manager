@@ -130,15 +130,3 @@ class AssistantContext:
     async def remove_repo(self, repo: str) -> None:
         """Remove a repository from tracking."""
         await self._state_manager.remove_repo(repo)
-
-    async def disable_pr(self, repo: str, pr_number: int) -> None:
-        """Disable automated processing for a PR.
-        The PR remains visible but the processor skips it."""
-        task = self._active_tasks.pop((repo, pr_number), None)
-        if task and not task.done():
-            task.cancel()
-        await self._state_manager.disable_pr(repo, pr_number)
-
-    async def enable_pr(self, repo: str, pr_number: int) -> None:
-        """Re-enable automated processing for a previously disabled PR."""
-        await self._state_manager.enable_pr(repo, pr_number)

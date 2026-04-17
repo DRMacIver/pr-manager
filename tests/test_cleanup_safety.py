@@ -53,51 +53,6 @@ async def _fake_sleep(seconds: float) -> None:
     raise _Stop()
 
 
-# ── Hidden-PR cleanup bug ──────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_disabled_pr_clone_not_deleted_when_still_on_github(state_path, tmp_path):
-    """A PR that is disabled but still open on GitHub must NOT have its clone
-    deleted by the cleanup loop."""
-    sm = await _make_state_manager()
-    await sm.add_repo("foo/bar")
-    await sm.upsert_pr_state("foo/bar", "50", PRState(title="disabled-open", branch="h"))
-    await sm.disable_pr("foo/bar", 50)
-
-    # PR #50 is still on GitHub:
-    fake_prs = [
-        {"number": 50, "title": "disabled-open", "headRefName": "h", "createdAt": "2026-01-01T00:00:00Z"},
-        {"number": 51, "title": "visible", "headRefName": "v", "createdAt": "2026-01-01T00:00:00Z"},
-    ]
-
-    host = _make_host()
-    remove_clone_calls: list[Path] = []
-
-    def tracking_remove_clone(p: Path) -> bool:
-        remove_clone_calls.append(p)
-        return True
-
-    with (
-        patch.object(poll_module, "gh_list_prs", AsyncMock(return_value=fake_prs)),
-        patch.object(poll_module, "git_update_pristine", AsyncMock()),
-        patch.object(poll_module, "remove_clone", tracking_remove_clone),
-        patch.object(poll_module, "PRProcessor", MagicMock()),
-        patch.object(poll_module.asyncio, "sleep", _fake_sleep),
-    ):
-        try:
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
-        except _Stop:
-            pass
-
-    # The clone for disabled PR #50 must NOT have been removed.
-    clone_50 = poll_module.get_clone_path("foo/bar", 50)
-    assert clone_50 not in remove_clone_calls, (
-        f"remove_clone was called for disabled PR #50 — "
-        f"disabled PRs still on GitHub must not be cleaned up"
-    )
-
-
 # ── mtime safety net ───────────────────────────────────────────────────────
 
 
