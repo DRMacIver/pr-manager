@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -402,6 +403,7 @@ class PRManagerApp(App):
         Binding("o", "open_terminal", "terminal"),
         Binding("v", "view_agent", "view agent"),
         Binding("c", "open_claude_session", "claude session"),
+        Binding("f", "fix", "fix PR"),
         Binding("slash", "toggle_chat", "chat"),
         Binding("s", "settings", "settings"),
         Binding("a", "add_repo", "add repo"),
@@ -483,11 +485,16 @@ class PRManagerApp(App):
         saved_row = table.cursor_row
         table.clear()
         for pr in self._display_prs:
+            key = (pr.repo, pr.number)
+            task = self._active_tasks.get(key)
+            is_fixing = bool(task and not task.done())
+            status = "fixing" if is_fixing else pr.status
+            is_active = is_fixing or pr.is_active
             table.add_row(
                 str(pr.number) if pr.number else "—",
                 pr.repo,
                 pr.branch,
-                self._format_status(pr.status, pr.is_active),
+                self._format_status(status, is_active),
                 self._format_review(pr.review_status),
                 pr.activity,
                 pr.age,
@@ -517,8 +524,10 @@ class PRManagerApp(App):
                     branch=pr.branch,
                     status=message.status,
                     age=pr.age,
-                    is_active=message.status in ("rebasing", "fixing_ci"),
+                    is_active=False,
                     error_message=message.error,
+                    review_status=pr.review_status,
+                    activity=pr.activity,
                 )
                 break
         self._refresh_table()
@@ -686,6 +695,59 @@ class PRManagerApp(App):
         # user's interactive Claude session is open.
         sentinel = asyncio.create_task(watch_tmux_window(window_name))
         self._active_tasks[key] = sentinel
+
+    async def action_fix(self) -> None:
+        if not self._check_tmux():
+            return
+        pr = self._get_selected_pr()
+        if not pr:
+            self.post_message(AppLogMessage("No PR selected", "warn"))
+            return
+        if pr.number == 0:
+            self.post_message(AppLogMessage(
+                "Local branches have no PR to fix yet", "warn",
+            ))
+            return
+        worktree = self._resolve_worktree(pr)
+        if not worktree.exists():
+            self.post_message(AppLogMessage(
+                f"Worktree not yet created for {pr.branch} — try again after first poll",
+                "warn",
+            ))
+            return
+        url = f"https://github.com/{pr.repo}/pull/{pr.number}"
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        inner_parts = [
+            "uv", "run", "--project", script_dir + "/..",
+            "pr-manager", "fix", url,
+        ]
+        inner_cmd = " ".join(shlex.quote(p) for p in inner_parts)
+        wrapped = (
+            f'{inner_cmd} || {{ '
+            f'rc=$?; echo; echo "pr-manager fix exited with code $rc"; '
+            f'echo "Press enter to close..."; read _; '
+            f'}}'
+        )
+        window_name = f"fix-{pr.number}"
+        rc, _, stderr = await run_cmd([
+            "tmux", "new-window",
+            "-c", str(worktree),
+            "-n", window_name,
+            "sh", "-c", wrapped,
+        ], check=False)
+        if rc != 0:
+            self.post_message(AppLogMessage(
+                f"tmux new-window failed (rc={rc}): {stderr}", "error",
+            ))
+            return
+        sentinel = asyncio.create_task(watch_tmux_window(window_name))
+        self._active_tasks[(pr.repo, pr.number)] = sentinel
+        self.post_message(AppLogMessage(
+            f"Started fix session for PR #{pr.number} ({pr.repo})", "info",
+        ))
+        # Force an immediate table re-render so the `fixing` overlay shows
+        # without waiting for the next spinner tick.
+        self._refresh_table()
 
     async def action_new_branch(self) -> None:
         if not self._check_tmux():
