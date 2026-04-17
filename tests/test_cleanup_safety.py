@@ -115,7 +115,9 @@ async def test_cleanup_does_not_remove_clone_for_pr_missing_from_gh_list(
         patch.object(poll_module, "gh_list_prs", AsyncMock(return_value=fake_prs)),
         patch.object(poll_module, "git_update_pristine", AsyncMock()),
         patch.object(poll_module, "remove_clone", tracking_remove_clone),
-        patch.object(poll_module, "PRProcessor", MagicMock()),
+        patch.object(poll_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(poll_module, "git_commits_behind", AsyncMock(return_value=0)),
+        patch.object(poll_module, "gh_pr_check_status", AsyncMock(return_value=("green", ""))),
         patch.object(poll_module.asyncio, "sleep", _fake_sleep),
     ):
         try:

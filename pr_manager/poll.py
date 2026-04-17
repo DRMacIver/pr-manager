@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Callable, Optional, Protocol
+from pathlib import Path
+from typing import Optional, Protocol
 
+from .display import build_display_list
 from .git import (
-    get_clone_path,
     gh_list_prs,
+    gh_pr_check_status,
+    get_clone_path,
+    git_commits_behind,
+    git_setup_pr_clone,
     git_update_pristine,
     remove_clone,
 )
-from .processor import PRProcessor
 from .state import PRDisplayInfo, PRState, StateManager
-from .display import build_display_list
 
 
 class PollHost(Protocol):
@@ -22,6 +25,22 @@ class PollHost(Protocol):
     def on_pr_list(self, prs: list[PRDisplayInfo]) -> None: ...
 
 
+async def compute_pr_status(repo: str, pr_data: dict, clone_path: Path) -> str:
+    """Read-only status derivation for a single PR.
+
+    Never writes to GitHub or to the working tree beyond the `git fetch`
+    embedded in `git_commits_behind`.
+    """
+    branch = pr_data["headRefName"]
+    base = pr_data.get("baseRefName") or "main"
+    behind = await git_commits_behind(clone_path, branch, base)
+    if behind > 0:
+        return "behind"
+    check_status, _details = await gh_pr_check_status(repo, int(pr_data["number"]))
+    # gh_pr_check_status returns: green | pending | failing | no_checks
+    return check_status
+
+
 async def poll_loop(
     host: PollHost,
     state_manager: StateManager,
@@ -29,6 +48,12 @@ async def poll_loop(
     recent_minutes: int,
     nudge: Optional[asyncio.Event] = None,
 ) -> None:
+    """Status-only poll loop. Never writes to PRs.
+
+    `recent_minutes` is accepted for signature compatibility with the
+    previous auto-fix loop; it is unused.
+    """
+    del recent_minutes  # retained in signature for API stability
     while True:
         try:
             repos = await state_manager.get_repos()
@@ -36,8 +61,6 @@ async def poll_loop(
                 host.on_log("No repos configured.", "warn")
             else:
                 host.on_log(f"Polling {len(repos)} repo(s)…", "info")
-                new_tasks: list[asyncio.Task] = []
-
                 for repo in repos:
                     try:
                         prs = await gh_list_prs(repo)
@@ -51,8 +74,9 @@ async def poll_loop(
                         host.on_log(f"Failed to fetch {repo}: {e}", "error")
                         continue
 
-                    # Remove state + clones for PRs no longer in the list.
                     current_numbers = {str(p["number"]) for p in prs}
+
+                    # Remove state + clones for PRs no longer in the list.
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
                         if old_num not in current_numbers:
                             deleted = remove_clone(get_clone_path(repo, int(old_num)))
@@ -72,74 +96,63 @@ async def poll_loop(
                             await state_manager.remove_local_branch(repo, branch)
                             host.on_log(f"Branch {branch} ({repo}) now has a PR — adopted", "info")
 
-                    # Ensure all known PRs have stub state so they appear immediately.
+                    # Ensure stub state for new PRs.
                     for pr_data in prs:
                         pn = str(pr_data["number"])
-                        if await state_manager.get_pr_state(repo, pn) is None:
-                            await state_manager.upsert_pr_state(repo, pn, PRState(
+                        existing = await state_manager.get_pr_state(repo, pn)
+                        if existing is None:
+                            existing = PRState(
                                 title=pr_data.get("title", ""),
                                 branch=pr_data["headRefName"],
                                 created_at=pr_data.get("createdAt", ""),
-                            ))
+                            )
+                            await state_manager.upsert_pr_state(repo, pn, existing)
 
-                    _repos = await state_manager.get_repos()
-                    host.on_pr_list(await build_display_list(_repos, state_manager))
-
+                    # Per-PR status refresh.
                     for pr_data in prs:
-                        pr_number: int = pr_data["number"]
-                        key = (repo, pr_number)
-                        existing = host._active_tasks.get(key)
-                        if existing and not existing.done():
-                            continue
+                        pn = str(pr_data["number"])
+                        try:
+                            await git_setup_pr_clone(repo, int(pn), pr_data["headRefName"])
+                            clone = get_clone_path(repo, int(pn))
+                            status = await compute_pr_status(repo, pr_data, clone)
+                        except Exception as e:
+                            host.on_log(f"Status check failed for #{pn} ({repo}): {e}", "warn")
+                            status = "error"
 
-                        def make_status_cb() -> Callable[[str, int, str, Optional[str]], None]:
-                            def cb(rr: str, nn: int, status: str, err: Optional[str]) -> None:
-                                host.on_status_update(rr, nn, status, err)
-                            return cb
-
-                        def make_log_cb() -> Callable[[str, str], None]:
-                            def cb(text: str, level: str) -> None:
-                                host.on_log(text, level)
-                            return cb
-
-                        processor = PRProcessor(
-                            repo=repo,
-                            pr_data=pr_data,
-                            state_manager=state_manager,
-                            status_cb=make_status_cb(),
-                            log_cb=make_log_cb(),
+                        st = await state_manager.get_pr_state(repo, pn) or PRState(
+                            title=pr_data.get("title", ""),
+                            branch=pr_data["headRefName"],
+                            created_at=pr_data.get("createdAt", ""),
                         )
-                        task = asyncio.create_task(processor.process(recent_minutes))
-                        host._active_tasks[key] = task
-                        new_tasks.append(task)
+                        st.title = pr_data.get("title", st.title)
+                        st.branch = pr_data["headRefName"]
+                        st.created_at = pr_data.get("createdAt", st.created_at)
+                        st.is_draft = pr_data.get("isDraft", False)
+                        st.review_decision = pr_data.get("reviewDecision", "") or ""
+                        comments = pr_data.get("comments", []) or []
+                        reviews = pr_data.get("reviews", []) or []
+                        st.comment_count = len(comments) + len(reviews)
+                        st.review_count = len(reviews)
+                        timestamps = (
+                            [c.get("createdAt", "") for c in comments]
+                            + [r.get("submittedAt", "") for r in reviews]
+                        )
+                        st.latest_activity = max(timestamps) if timestamps else None
+                        st.status = status
+                        st.error_message = None
+                        await state_manager.upsert_pr_state(repo, pn, st)
+                        host.on_status_update(repo, int(pn), status, None)
 
-                if new_tasks:
-                    await asyncio.gather(*new_tasks, return_exceptions=True)
+                    host.on_pr_list(await build_display_list(await state_manager.get_repos(), state_manager))
 
-            repos = await state_manager.get_repos()
-            display = await build_display_list(repos, state_manager)
-            host.on_pr_list(display)
+            host.on_pr_list(await build_display_list(await state_manager.get_repos(), state_manager))
 
         except asyncio.CancelledError:
             return
         except Exception as e:
             host.on_log(f"Poll loop error: {e}", "error")
 
-        # Poll more frequently when any PR is waiting for CI checks.
         sleep_minutes = poll_interval_minutes
-        try:
-            any_pending = False
-            for repo in await state_manager.get_repos():
-                for _, pr_state in (await state_manager.get_all_pr_states(repo)).items():
-                    if pr_state.status in ("pending", "blocked"):
-                        any_pending = True
-                        break
-                if any_pending:
-                    break
-            if any_pending:
-                sleep_minutes = 1
-        except Exception:
-            pass
         if nudge is not None:
             nudge.clear()
             try:

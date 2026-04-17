@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_manager import poll as poll_module
-from pr_manager.state import PRState, StateManager
+from pr_manager.state import StateManager
 
 
 @pytest.fixture
@@ -45,11 +45,6 @@ async def test_nudge_event_interrupts_poll_sleep(state_path):
     host.on_status_update = MagicMock()
     host.on_pr_list = MagicMock()
 
-    processor_class = MagicMock()
-    processor_instance = MagicMock()
-    processor_instance.process = AsyncMock()
-    processor_class.return_value = processor_instance
-
     nudge = asyncio.Event()
     poll_cycle_times: list[float] = []
 
@@ -63,7 +58,9 @@ async def test_nudge_event_interrupts_poll_sleep(state_path):
     with (
         patch.object(poll_module, "gh_list_prs", tracking_gh_list_prs),
         patch.object(poll_module, "git_update_pristine", AsyncMock()),
-        patch.object(poll_module, "PRProcessor", processor_class),
+        patch.object(poll_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(poll_module, "git_commits_behind", AsyncMock(return_value=0)),
+        patch.object(poll_module, "gh_pr_check_status", AsyncMock(return_value=("green", ""))),
     ):
         # Run with a 60-minute poll interval.  If nudge works, cycle 2
         # arrives in <1s.  If not, the 2-second timeout catches it.
