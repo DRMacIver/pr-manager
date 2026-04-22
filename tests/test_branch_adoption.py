@@ -97,3 +97,28 @@ async def test_setup_pr_clone_skips_if_pr_clone_already_exists(repos_dir):
     # Should be a real directory, not a symlink.
     assert not pr_clone.is_symlink()
     assert (pr_clone / "existing.txt").read_text() == "already here"
+
+
+@pytest.mark.asyncio
+async def test_setup_pr_clone_replaces_stale_symlink(repos_dir):
+    """If the PR clone path is a dangling symlink (target deleted), it should
+    be removed and a fresh clone created."""
+    # Create and then break a symlink
+    branch_clone = get_branch_clone_path("foo/bar", "old-feature")
+    branch_clone.mkdir(parents=True)
+    pr_clone = get_clone_path("foo/bar", 42)
+    pr_clone.symlink_to(branch_clone.resolve())
+    branch_clone.rmdir()
+
+    assert not pr_clone.exists()  # broken symlink
+    assert pr_clone.is_symlink()  # but symlink itself is present
+
+    with (
+        patch("pr_manager.git._clone_from_pristine", AsyncMock()) as mock_clone,
+        patch("pr_manager.git.run_cmd", AsyncMock()) as mock_run,
+    ):
+        await git_setup_pr_clone("foo/bar", 42, "new-feature")
+        mock_clone.assert_called_once()
+
+    # The dangling symlink should have been cleaned up
+    assert not pr_clone.is_symlink() or pr_clone.exists()

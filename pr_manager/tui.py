@@ -292,6 +292,7 @@ class PRDetailScreen(ModalScreen):
     BINDINGS = [
         Binding("escape", "dismiss", "close"),
         Binding("r", "refresh", "refresh"),
+        Binding("y", "copy_log", "copy log"),
     ]
 
     def __init__(self, pr: PRDisplayInfo, pr_state: Optional[PRState]) -> None:
@@ -341,6 +342,20 @@ class PRDetailScreen(ModalScreen):
 
     def action_refresh(self) -> None:
         self._load_log()
+
+    def action_copy_log(self) -> None:
+        log_path = get_log_path(self._pr.repo, self._pr.number)
+        if log_path.exists():
+            text = log_path.read_text()
+            lines = text.splitlines()
+            if len(lines) > 200:
+                lines = lines[-200:]
+            self.app.copy_to_clipboard("\n".join(lines))
+            self.app.post_message(AppLogMessage(
+                f"Copied last {len(lines)} log lines to clipboard", "info",
+            ))
+        else:
+            self.app.post_message(AppLogMessage("No log file to copy", "warn"))
 
     async def action_dismiss(self, result=None) -> None:
         self.dismiss()
@@ -405,6 +420,7 @@ class PRManagerApp(App):
         Binding("v", "view_agent", "view agent"),
         Binding("c", "open_claude_session", "claude session"),
         Binding("f", "fix", "fix PR"),
+        Binding("y", "copy_pr_info", "copy"),
         Binding("slash", "toggle_chat", "chat"),
         Binding("s", "settings", "settings"),
         Binding("a", "add_repo", "add repo"),
@@ -588,6 +604,27 @@ class PRManagerApp(App):
             self.post_message(AppLogMessage(f"Action failed: {e}", "error"))
             self.post_message(AppLogMessage(tb, "error"))
             return False
+
+    async def action_copy_pr_info(self) -> None:
+        pr = self._get_selected_pr()
+        if not pr:
+            self.post_message(AppLogMessage("No PR selected", "warn"))
+            return
+        lines = [
+            f"PR #{pr.number} — {pr.title}",
+            f"Repo: {pr.repo}",
+            f"Branch: {pr.branch}",
+            f"Status: {pr.status}",
+        ]
+        if pr.error_message:
+            lines.append(f"Error: {pr.error_message}")
+        if pr.review_status:
+            lines.append(f"Review: {pr.review_status}")
+        if pr.number:
+            lines.append(f"URL: https://github.com/{pr.repo}/pull/{pr.number}")
+        text = "\n".join(lines)
+        self.copy_to_clipboard(text)
+        self.post_message(AppLogMessage(f"Copied PR #{pr.number} info to clipboard", "info"))
 
     async def action_detail(self) -> None:
         pr = self._get_selected_pr()

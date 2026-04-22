@@ -144,3 +144,113 @@ async def test_cleanup_does_not_remove_clone_for_pr_missing_from_gh_list(
         "PR state was removed even though the clone was not deleted — "
         "state removal should be conditional on clone deletion"
     )
+
+
+# ── symlink handling ──────────────────────────────────────────────────────
+
+
+def test_remove_clone_handles_valid_symlink(tmp_path):
+    """remove_clone on a symlink to a directory should unlink the symlink
+    without touching the target directory."""
+    target = tmp_path / "branch-feat"
+    target.mkdir()
+    (target / "file.txt").write_text("important work")
+
+    link = tmp_path / "pr-42"
+    link.symlink_to(target)
+
+    result = remove_clone(link)
+
+    assert result is True
+    assert not link.exists()
+    assert not link.is_symlink()
+    assert target.exists(), "target directory should be untouched"
+    assert (target / "file.txt").read_text() == "important work"
+
+
+def test_remove_clone_handles_broken_symlink(tmp_path):
+    """remove_clone on a dangling symlink should unlink it and return True."""
+    target = tmp_path / "branch-feat"
+    target.mkdir()
+
+    link = tmp_path / "pr-42"
+    link.symlink_to(target)
+
+    # Break the symlink by removing the target.
+    target.rmdir()
+
+    assert not link.exists()  # follows symlink → False
+    assert link.is_symlink()  # but the symlink itself is still there
+
+    result = remove_clone(link)
+
+    assert result is True
+    assert not link.is_symlink(), "dangling symlink should have been removed"
+
+
+def test_remove_clone_symlink_ignores_mtime_safety(tmp_path):
+    """Symlinks are always safe to remove (they don't contain data), so the
+    one-day mtime guard should not apply."""
+    target = tmp_path / "branch-feat"
+    target.mkdir()
+
+    link = tmp_path / "pr-42"
+    link.symlink_to(target)
+
+    # Even if the symlink and its target are brand-new (mtime < 1 day),
+    # removing the symlink is safe because the data lives in the target.
+    result = remove_clone(link)
+
+    assert result is True
+    assert not link.is_symlink()
+    assert target.exists()
+
+
+# ── poll loop resilience ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cleanup_error_for_one_pr_does_not_crash_poll_loop(
+    state_path, tmp_path, monkeypatch,
+):
+    """If remove_clone raises for one PR, the poll loop should log the error
+    and continue processing other PRs — not crash with 'Poll loop error'."""
+    sm = await _make_state_manager()
+    await sm.add_repo("foo/bar")
+    await sm.upsert_pr_state("foo/bar", "100", PRState(title="ok-pr", branch="ok"))
+    await sm.upsert_pr_state("foo/bar", "200", PRState(title="bad-pr", branch="bad"))
+
+    # gh pr list returns neither — both should be cleaned up.
+    fake_prs: list[dict] = []
+
+    host = _make_host()
+    calls: list[str] = []
+
+    def exploding_remove_clone(p):
+        name = p.name
+        calls.append(name)
+        if "200" in name:
+            raise OSError("Cannot call rmtree on a symbolic link")
+        return True
+
+    with (
+        patch.object(poll_module, "gh_list_prs", AsyncMock(return_value=fake_prs)),
+        patch.object(poll_module, "git_update_pristine", AsyncMock()),
+        patch.object(poll_module, "remove_clone", exploding_remove_clone),
+        patch.object(poll_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(poll_module.asyncio, "sleep", _fake_sleep),
+    ):
+        try:
+            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
+        except _Stop:
+            pass
+
+    # The error for PR #200 should have been logged, not raised.
+    error_logs = [c for c in host.on_log.call_args_list
+                  if c.args[1] == "error" or c.args[1] == "warn"]
+    assert any("200" in str(c) for c in error_logs), (
+        f"Expected a logged error for PR #200, got: {error_logs}"
+    )
+    # PR #100 should have been cleaned up successfully.
+    pr100 = await sm.get_pr_state("foo/bar", "100")
+    assert pr100 is None, "PR #100 should have been removed from state"

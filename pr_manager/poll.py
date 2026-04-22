@@ -79,7 +79,11 @@ async def poll_loop(
                     # Remove state + clones for PRs no longer in the list.
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
                         if old_num not in current_numbers:
-                            deleted = remove_clone(get_clone_path(repo, int(old_num)))
+                            try:
+                                deleted = remove_clone(get_clone_path(repo, int(old_num)))
+                            except Exception as e:
+                                host.on_log(f"Failed to clean up PR #{old_num} ({repo}): {e}", "warn")
+                                continue
                             if deleted:
                                 await state_manager.remove_pr(repo, old_num)
                                 host.on_log(f"Removed PR #{old_num} ({repo}) from state", "info")

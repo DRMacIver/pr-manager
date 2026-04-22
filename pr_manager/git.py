@@ -123,6 +123,8 @@ async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
     clone_path = get_clone_path(repo, pr_number)
     if clone_path.exists():
         return
+    if clone_path.is_symlink():
+        clone_path.unlink()
     # If a branch clone already exists (e.g. a local branch that just got a
     # PR), symlink to it instead of creating a fresh clone.  This preserves
     # any active Claude sessions or other processes in the original directory.
@@ -151,7 +153,13 @@ def remove_clone(clone_path: Path) -> bool:
     Returns True if the directory was deleted, False if it was kept.
     As a safety net, refuses to delete directories modified within the
     last day — logs a warning instead.
+
+    Symlinks (valid or broken) are always safe to unlink because the
+    actual data lives in the target directory.
     """
+    if clone_path.is_symlink():
+        clone_path.unlink()
+        return True
     if not clone_path.exists():
         return True
     age = time.time() - clone_path.stat().st_mtime
