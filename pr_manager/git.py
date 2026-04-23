@@ -140,6 +140,7 @@ async def git_create_branch_clone(repo: str, branch: str) -> Path:
     """Create a working clone with a new branch from origin/main."""
     clone_path = get_branch_clone_path(repo, branch)
     await _clone_from_pristine(repo, clone_path)
+    await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path)
     await run_cmd(["git", "checkout", "-b", branch, "origin/main"], cwd=clone_path)
     return clone_path
 
