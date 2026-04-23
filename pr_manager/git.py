@@ -136,12 +136,24 @@ async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
     await run_cmd(["git", "checkout", branch], cwd=clone_path, check=False)
 
 
+async def git_default_branch(clone_path: Path) -> str:
+    """Return the default branch name for origin ('main' or 'master')."""
+    rc, _, _ = await run_cmd(
+        ["git", "rev-parse", "--verify", "origin/main"],
+        cwd=clone_path, check=False,
+    )
+    if rc == 0:
+        return "main"
+    return "master"
+
+
 async def git_create_branch_clone(repo: str, branch: str) -> Path:
-    """Create a working clone with a new branch from origin/main."""
+    """Create a working clone with a new branch from the default branch."""
     clone_path = get_branch_clone_path(repo, branch)
     await _clone_from_pristine(repo, clone_path)
     await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path)
-    await run_cmd(["git", "checkout", "-b", branch, "origin/main"], cwd=clone_path)
+    default = await git_default_branch(clone_path)
+    await run_cmd(["git", "checkout", "-b", branch, f"origin/{default}"], cwd=clone_path)
     return clone_path
 
 

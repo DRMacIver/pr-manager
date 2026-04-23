@@ -166,7 +166,12 @@ def _startup_script(ssh_url: str, branch: str, create_branch: bool, has_pristine
         clone_cmd = f"git clone {ssh_url} ~/repo && cd ~/repo"
 
     if create_branch:
-        checkout = f"cd ~/repo && git checkout -b {branch} origin/main"
+        checkout = (
+            f"cd ~/repo && "
+            f"if git rev-parse --verify origin/main >/dev/null 2>&1; then "
+            f"git checkout -b {branch} origin/main; else "
+            f"git checkout -b {branch} origin/master; fi"
+        )
     else:
         checkout = f"cd ~/repo && git checkout {branch}"
 
