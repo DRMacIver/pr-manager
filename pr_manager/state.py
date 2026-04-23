@@ -32,15 +32,19 @@ CLAUDE_PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "dontA
 @dataclass
 class Settings:
     claude_permission_mode: str = "default"
+    theme: str = "textual-light"
 
 
 _SETTINGS_FIELDS = set(Settings.__dataclass_fields__)
 
 
 def _dict_to_settings(d: dict) -> Settings:
+    from textual.theme import BUILTIN_THEMES
     s = Settings(**{k: v for k, v in d.items() if k in _SETTINGS_FIELDS})
     if s.claude_permission_mode not in CLAUDE_PERMISSION_MODES:
         s.claude_permission_mode = "default"
+    if s.theme not in BUILTIN_THEMES:
+        s.theme = Settings.theme
     return s
 
 

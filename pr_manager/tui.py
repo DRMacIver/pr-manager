@@ -15,7 +15,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog
+from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
 from .git import get_branch_clone_path, get_clone_path, get_log_path, git_create_branch_clone, git_update_pristine, run_cmd
@@ -228,6 +228,7 @@ class SettingsScreen(ModalScreen):
         self._settings = settings
 
     def compose(self) -> ComposeResult:
+        from textual.theme import BUILTIN_THEMES
         from textual.widgets import Static
         with Vertical(id="settings-dialog"):
             yield Static("Settings", id="settings-title")
@@ -237,7 +238,21 @@ class SettingsScreen(ModalScreen):
                 for mode in CLAUDE_PERMISSION_MODES:
                     yield Button(mode, id=f"perm-{mode}",
                                  variant="primary" if mode == self._settings.claude_permission_mode else "default")
+            yield Static("Theme:")
+            yield Select(
+                [(name, name) for name in sorted(BUILTIN_THEMES)],
+                value=self._settings.theme,
+                id="theme-select",
+            )
             yield Button("Close", id="settings-close")
+
+    @on(Select.Changed, "#theme-select")
+    async def _on_theme_changed(self, event: Select.Changed) -> None:
+        theme = str(event.value)
+        self._settings.theme = theme
+        await self._state_manager.update_settings(self._settings)
+        self.app.theme = theme
+        self.app.post_message(AppLogMessage(f"Theme set to: {theme}", "info"))
 
     @on(Button.Pressed)
     async def _on_button(self, event: Button.Pressed) -> None:
@@ -249,12 +264,10 @@ class SettingsScreen(ModalScreen):
             mode = btn_id[5:]
             self._settings.claude_permission_mode = mode
             await self._state_manager.update_settings(self._settings)
-            # Update display.
             from textual.widgets import Static
             self.query_one("#perm-display", Static).update(
                 f"Claude permission mode: [bold]{mode}[/bold]"
             )
-            # Update button variants.
             for m in CLAUDE_PERMISSION_MODES:
                 btn = self.query_one(f"#perm-{m}", Button)
                 btn.variant = "primary" if m == mode else "default"
@@ -460,7 +473,9 @@ class PRManagerApp(App):
                 yield Input(id="chat-input", placeholder="Ask the assistant...")
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
+        settings = await self._state_manager.get_settings()
+        self.theme = settings.theme
         table = self.query_one(DataTable)
         table.add_columns("PR#", "Repo", "Branch", "Status", "Review", "Activity", "Age")
         host = TuiPollHost(self)
