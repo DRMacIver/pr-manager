@@ -10,7 +10,7 @@ dependencies = [
     # that reject newer model aliases (e.g. 0.1.54 bundles 2.1.90, which
     # predates "fable").
     "claude-agent-sdk>=0.2.134",
-    "textual>=0.80.0",
+    "textual>=8.2",
 ]
 
 [project.scripts]
