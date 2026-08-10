@@ -16,13 +16,6 @@ from pr_manager import poll as poll_module
 from pr_manager.state import StateManager
 
 
-@pytest.fixture
-def state_path(tmp_path, monkeypatch):
-    path = tmp_path / "state.json"
-    monkeypatch.setattr("pr_manager.state.STATE_PATH", path)
-    return path
-
-
 async def _make_state_manager() -> StateManager:
     sm = StateManager()
     await sm.load()

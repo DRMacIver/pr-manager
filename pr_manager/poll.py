@@ -156,12 +156,18 @@ async def poll_loop(
         except Exception as e:
             host.on_log(f"Poll loop error: {e}", "error")
 
-        sleep_minutes = poll_interval_minutes
-        if nudge is not None:
-            nudge.clear()
-            try:
-                await asyncio.wait_for(nudge.wait(), timeout=sleep_minutes * 60)
-            except asyncio.TimeoutError:
-                pass
-        else:
-            await asyncio.sleep(sleep_minutes * 60)
+        await _sleep_between_polls(poll_interval_minutes, nudge)
+
+
+async def _sleep_between_polls(
+    minutes: float, nudge: Optional[asyncio.Event],
+) -> None:
+    """Wait for the next poll cycle; a set nudge event wakes us early."""
+    if nudge is not None:
+        nudge.clear()
+        try:
+            await asyncio.wait_for(nudge.wait(), timeout=minutes * 60)
+        except asyncio.TimeoutError:
+            pass
+    else:
+        await asyncio.sleep(minutes * 60)

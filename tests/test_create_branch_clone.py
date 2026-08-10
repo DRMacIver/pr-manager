@@ -13,14 +13,6 @@ import pytest
 from pr_manager.git import git_create_branch_clone, git_default_branch
 
 
-@pytest.fixture
-def repos_dir(tmp_path, monkeypatch):
-    d = tmp_path / "repos"
-    d.mkdir()
-    monkeypatch.setattr("pr_manager.git.REPOS_DIR", d)
-    return d
-
-
 @pytest.mark.asyncio
 async def test_create_branch_clone_fetches_before_checkout(repos_dir):
     """git_create_branch_clone must fetch from origin after cloning from

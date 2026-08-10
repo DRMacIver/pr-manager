@@ -8,43 +8,11 @@ a fresh clone.  This way:
 """
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
-from pr_manager import poll as poll_module
 from pr_manager.git import get_branch_clone_path, get_clone_path, git_setup_pr_clone
-from pr_manager.state import PRState, StateManager
-
-
-@pytest.fixture
-def state_path(tmp_path, monkeypatch):
-    path = tmp_path / "state.json"
-    monkeypatch.setattr("pr_manager.state.STATE_PATH", path)
-    return path
-
-
-@pytest.fixture
-def repos_dir(tmp_path, monkeypatch):
-    d = tmp_path / "repos"
-    d.mkdir()
-    monkeypatch.setattr("pr_manager.git.REPOS_DIR", d)
-    return d
-
-
-async def _make_state_manager() -> StateManager:
-    sm = StateManager()
-    await sm.load()
-    return sm
-
-
-class _Stop(Exception):
-    pass
-
-
-async def _fake_sleep(seconds: float) -> None:
-    raise _Stop()
 
 
 @pytest.mark.asyncio

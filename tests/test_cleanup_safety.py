@@ -12,6 +12,7 @@ The poll loop removes state and clones for PRs that are no longer in the
 """
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,13 +22,6 @@ import pytest
 from pr_manager import poll as poll_module
 from pr_manager.git import remove_clone
 from pr_manager.state import PRState, StateManager
-
-
-@pytest.fixture
-def state_path(tmp_path, monkeypatch):
-    path = tmp_path / "state.json"
-    monkeypatch.setattr("pr_manager.state.STATE_PATH", path)
-    return path
 
 
 async def _make_state_manager() -> StateManager:
@@ -49,7 +43,8 @@ def _make_host():
     return host
 
 
-async def _fake_sleep(seconds: float) -> None:
+async def _stop_after_first_pass(minutes, nudge) -> None:
+    """Stand-in for poll._sleep_between_polls that ends the loop."""
     raise _Stop()
 
 
@@ -79,7 +74,6 @@ def test_remove_clone_deletes_old_directory(tmp_path):
 
     # Backdate the mtime to 2 days ago.
     old_time = time.time() - 2 * 86400
-    import os
     os.utime(clone, (old_time, old_time))
 
     remove_clone(clone)
@@ -118,27 +112,16 @@ async def test_cleanup_does_not_remove_clone_for_pr_missing_from_gh_list(
         patch.object(poll_module, "git_setup_pr_clone", AsyncMock()),
         patch.object(poll_module, "git_commits_behind", AsyncMock(return_value=0)),
         patch.object(poll_module, "gh_pr_check_status", AsyncMock(return_value=("green", ""))),
-        patch.object(poll_module.asyncio, "sleep", _fake_sleep),
+        patch.object(poll_module, "_sleep_between_polls", _stop_after_first_pass),
     ):
         try:
             await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
         except _Stop:
             pass
 
-    # remove_clone should have been called, but since the directory would be
-    # recent, it should have been a no-op (the real safety is in remove_clone
-    # itself).  But importantly, the state should NOT be removed if the clone
-    # was preserved.
-    # For this test we just verify remove_clone WAS called (the poll loop still
-    # tries) — the actual protection is in remove_clone's mtime check tested
-    # separately above.  But the state removal should also be gated.
-    # Actually, the better fix is: poll loop should pass info to remove_clone
-    # and only remove state if the clone was actually deleted.
-    # Let's test the end-to-end: state should survive if clone survives.
-    # Since tracking_remove_clone is a no-op (doesn't actually delete), state
-    # removal should be conditional on the clone being gone.
-    # This test will initially fail because the current code unconditionally
-    # removes state.
+    # tracking_remove_clone is a no-op stand-in for "clone was too recent to
+    # delete" (returns None, i.e. falsy).  State removal must be conditional
+    # on the clone actually being deleted.
     pr_state = await sm.get_pr_state("foo/bar", "188")
     assert pr_state is not None, (
         "PR state was removed even though the clone was not deleted — "
@@ -238,7 +221,7 @@ async def test_cleanup_error_for_one_pr_does_not_crash_poll_loop(
         patch.object(poll_module, "git_update_pristine", AsyncMock()),
         patch.object(poll_module, "remove_clone", exploding_remove_clone),
         patch.object(poll_module, "git_setup_pr_clone", AsyncMock()),
-        patch.object(poll_module.asyncio, "sleep", _fake_sleep),
+        patch.object(poll_module, "_sleep_between_polls", _stop_after_first_pass),
     ):
         try:
             await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
