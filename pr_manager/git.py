@@ -15,10 +15,17 @@ from .constants import REPOS_DIR, LOGS_DIR
 log = logging.getLogger(__name__)
 
 
+# Generous ceiling: even `git clone` of a large repo should finish well
+# inside this, while a genuinely hung gh/git/tmux call can no longer
+# freeze the poll loop (and with it all status updates) forever.
+_DEFAULT_CMD_TIMEOUT = 600.0
+
+
 async def run_cmd(
     args: list[str],
     cwd: Optional[Path] = None,
     check: bool = True,
+    timeout: float = _DEFAULT_CMD_TIMEOUT,
 ) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -26,7 +33,17 @@ async def run_cmd(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_b, stderr_b = await proc.communicate()
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout,
+        )
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        message = f"`{' '.join(args)}` timed out after {timeout:.0f}s and was killed"
+        if check:
+            raise RuntimeError(message) from None
+        return 124, "", message
     rc = proc.returncode or 0
     stdout = stdout_b.decode(errors="replace").strip()
     stderr = stderr_b.decode(errors="replace").strip()
