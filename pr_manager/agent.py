@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -159,6 +160,11 @@ class AgentRunner:
             permission_mode="bypassPermissions",
             resume=session_id,
             max_turns=max_turns,
+            # The SDK prefers a CLI bundled inside the package, which can be
+            # older than the system installation and reject models the system
+            # CLI (and the user's settings) already use.  Pin to the system
+            # `claude` when there is one.
+            cli_path=shutil.which("claude"),
         )
 
         log = AgentLogger(self._log_path, tee_stdout=self._log_to_stdout)
