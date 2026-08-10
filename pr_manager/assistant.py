@@ -81,7 +81,7 @@ class Assistant:
     """Interactive AI assistant that runs Python code in-process."""
 
     def __init__(
-        self, ctx: AssistantContext, model: str = "claude-sonnet-4-20250514",
+        self, ctx: AssistantContext, model: str = "claude-sonnet-5",
     ) -> None:
         self.ctx = ctx
         self.model = model

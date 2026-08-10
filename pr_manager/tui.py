@@ -861,12 +861,24 @@ class PRManagerApp(App):
         else:
             panel.display = True
             if self._assistant is None:
+                chat_log = self.query_one("#chat-log", RichLog)
+                if not (
+                    os.environ.get("ANTHROPIC_API_KEY")
+                    or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+                ):
+                    # The anthropic SDK does not read the Claude Code OAuth
+                    # login, so the chat needs its own credentials.
+                    chat_log.write(
+                        "[bold red]Assistant unavailable:[/bold red] set "
+                        "ANTHROPIC_API_KEY in the environment. (The Claude "
+                        "Code login used for PR agents does not cover this.)"
+                    )
+                    return
                 from .assistant import Assistant
                 from .assistant_api import AssistantContext
 
                 ctx = AssistantContext(self, self._state_manager, self._active_tasks)
                 self._assistant = Assistant(ctx)
-                chat_log = self.query_one("#chat-log", RichLog)
                 chat_log.write("[dim]Assistant ready. Type a message below.[/dim]")
             self.query_one("#chat-input", Input).focus()
 
