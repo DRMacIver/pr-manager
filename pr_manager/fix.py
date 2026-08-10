@@ -40,6 +40,24 @@ async def _wait(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+def _final_token(result: str | None) -> str | None:
+    """The protocol token (DONE / UNFIXABLE) an agent ended its reply with.
+
+    Agents are told to output the token as the final line of their reply;
+    narration above it is fine.  Substring matching is not safe — "could
+    NOT get this DONE" must never read as success — so only an exact
+    final line counts.
+    """
+    if not result:
+        return None
+    for line in reversed(result.splitlines()):
+        cleaned = line.strip().strip("*`").strip().rstrip(".!").upper()
+        if not cleaned:
+            continue
+        return cleaned if cleaned in ("DONE", "UNFIXABLE") else None
+    return None
+
+
 def parse_pr_url(url: str) -> tuple[str, int]:
     """Parse a GitHub PR URL into (owner/repo, pr_number)."""
     m = re.match(r"https?://github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
@@ -176,7 +194,7 @@ async def _do_rebase(
     )
     result = await runner.run_rebase(target_branch)
 
-    if result and "DONE" in result.upper():
+    if _final_token(result) == "DONE":
         pushed = await git_push_force_with_lease(clone_path, branch)
         if pushed:
             new_commits = await git_get_new_commits_since(clone_path, old_sha)
@@ -206,9 +224,9 @@ async def _do_ci_fix(
         log_to_stdout=True,
     )
     result = await runner.run_ci_fix(failures)
-    result_upper = (result or "").upper()
+    token = _final_token(result)
 
-    if "UNFIXABLE" in result_upper:
+    if token == "UNFIXABLE":
         _log("Agent claims UNFIXABLE — reviewing")
         review_decision, review_feedback = await runner.run_ci_fix_review(
             result or "", failures, pr_title,
@@ -216,16 +234,16 @@ async def _do_ci_fix(
         if review_decision == "reject":
             _log("UNFIXABLE claim rejected — retrying fix")
             result = await runner.run_ci_fix_retry(review_feedback)
-            result_upper = (result or "").upper()
+            token = _final_token(result)
         else:
             _log("CI failures confirmed unrelated to PR changes", "error")
             return False
 
-    if "UNFIXABLE" in result_upper:
+    if token == "UNFIXABLE":
         _log("CI failures confirmed unrelated to PR changes", "error")
         return False
 
-    if "DONE" in result_upper:
+    if token == "DONE":
         new_sha = await git_get_current_sha(clone_path)
         if new_sha != old_sha:
             pushed = await git_push_force_with_lease(clone_path, branch)

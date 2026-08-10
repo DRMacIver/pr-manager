@@ -31,6 +31,28 @@ def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _parse_review_verdict(text: str) -> tuple[str, str]:
+    """Parse the UNFIXABLE-review agent's ACCEPT / REJECT verdict.
+
+    The verdict is the first line that STARTS with either token; REJECT
+    feedback is the remainder of that line plus any following lines.
+    Substring matching is unsafe — prose like "I would not reject this
+    lightly" must not flip the verdict.  Unparseable output defaults to
+    accept, the cautious direction: accept means "leave the PR alone".
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip().strip("*`").strip()
+        upper = stripped.upper()
+        if upper.startswith("REJECT"):
+            first = stripped[len("REJECT"):].lstrip(":").strip()
+            feedback = "\n".join([first, *lines[i + 1:]]).strip()
+            return "reject", feedback
+        if upper.startswith("ACCEPT"):
+            return "accept", ""
+    return "accept", ""
+
+
 # Appended to every agent prompt.  The agent runs in a single query() with
 # nothing to re-invoke it, so a turn that ends waiting on a background task
 # or scheduled wakeup is simply over — the notification never arrives.
@@ -88,7 +110,7 @@ class AgentRunner:
             "1. Run: git fetch origin\n"
             f"2. Run: git rebase origin/{target_branch}\n"
             "3. Resolve any conflicts if they arise\n"
-            "4. Once the rebase has succeeded, output exactly: DONE"
+            "4. Once the rebase has succeeded, output DONE as the final line of your reply"
         )
         return await self._run_agent(prompt)
 
@@ -101,13 +123,14 @@ class AgentRunner:
             "2. Compare the files this PR modifies with the failing tests/errors.\n"
             "3. If the failures are clearly unrelated to the PR's changes (e.g. upstream\n"
             "   dependency breakage, infrastructure issues, flaky tests in untouched code),\n"
-            "   do NOT attempt to fix them. Instead output exactly: UNFIXABLE\n\n"
+            "   do NOT attempt to fix them. Instead output UNFIXABLE as the final line\n"
+            "   of your reply.\n\n"
             "Only if the failures are plausibly caused by this PR's changes, fix the code.\n"
             "After fixing, verify your changes locally before committing:\n"
             "- Run the failing tests/checks locally if possible\n"
             "- If local verification passes, commit (use git add -A && git commit)\n"
             "- If local verification fails, keep iterating until the tests pass\n"
-            "When complete, output exactly: DONE"
+            "When complete, output DONE as the final line of your reply."
         )
         return await self._run_agent(prompt)
 
@@ -141,9 +164,8 @@ class AgentRunner:
             prompt, persist_session=False, max_turns=15,
         )
         result_str = result or ""
-        if "REJECT" in result_str.upper():
-            idx = result_str.upper().find("REJECT")
-            feedback = result_str[idx + len("REJECT"):].lstrip(": ")
+        decision, feedback = _parse_review_verdict(result_str)
+        if decision == "reject":
             return "reject", feedback or result_str
         return "accept", result_str
 
@@ -156,7 +178,7 @@ class AgentRunner:
             "Fix the code, then verify your changes locally by running the failing tests/checks.\n"
             "Keep iterating until local verification passes.\n"
             "Commit your changes (use git add -A && git commit).\n"
-            "When complete, output exactly: DONE"
+            "When complete, output DONE as the final line of your reply."
         )
         return await self._run_agent(prompt)
 

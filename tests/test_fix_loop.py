@@ -1,11 +1,196 @@
 """Tests for the `pr-manager fix` control loop."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pr_manager import fix as fix_module
+from pr_manager.fix import _final_token
+
+
+# ── agent-result token parsing ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("result", "token"),
+    [
+        ("DONE", "DONE"),
+        ("DONE\n", "DONE"),
+        ("All rebased cleanly.\n\nDONE", "DONE"),
+        ("**DONE**", "DONE"),
+        ("UNFIXABLE", "UNFIXABLE"),
+        ("These failures are upstream breakage.\nUNFIXABLE", "UNFIXABLE"),
+        # Regression: substring matching treated these as success/refusal.
+        ("I could NOT get this DONE — the rebase has unresolved conflicts", None),
+        ("This is not UNFIXABLE, I fixed it, but tests still run", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_final_token(result, token):
+    assert _final_token(result) == token
+
+
+# ── _do_rebase ───────────────────────────────────────────────────────────────
+
+
+def _runner_mock(**results) -> MagicMock:
+    runner = MagicMock()
+    for name, value in results.items():
+        setattr(runner, name, AsyncMock(return_value=value))
+    return runner
+
+
+async def _run_do_rebase(agent_result, push_ok=True):
+    state_manager = AsyncMock()
+    runner = _runner_mock(run_rebase=agent_result)
+    with (
+        patch.object(fix_module, "AgentRunner", MagicMock(return_value=runner)),
+        patch.object(fix_module, "git_get_current_sha", AsyncMock(return_value="old")),
+        patch.object(
+            fix_module, "git_push_force_with_lease", AsyncMock(return_value=push_ok)
+        ) as push,
+        patch.object(
+            fix_module, "git_get_new_commits_since", AsyncMock(return_value=["n1"])
+        ),
+    ):
+        ok = await fix_module._do_rebase(
+            "foo/bar", 42, "feat", "/clone", "/log", "main", state_manager,
+        )
+    return ok, push, state_manager
+
+
+@pytest.mark.asyncio
+async def test_rebase_success_pushes_and_records():
+    ok, push, sm = await _run_do_rebase("Rebased.\nDONE")
+    assert ok is True
+    push.assert_awaited_once()
+    sm.record_our_commits.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rebase_failure_narration_containing_done_does_not_push():
+    """Regression: 'could NOT get this DONE' must not be treated as success
+    and force-pushed."""
+    ok, push, sm = await _run_do_rebase(
+        "I could NOT get this DONE — unresolved conflicts remain."
+    )
+    assert ok is False
+    push.assert_not_awaited()
+    sm.record_our_commits.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rebase_rejected_push_is_failure_and_not_recorded():
+    ok, push, sm = await _run_do_rebase("DONE", push_ok=False)
+    assert ok is False
+    sm.record_our_commits.assert_not_awaited()
+
+
+# ── _do_ci_fix ───────────────────────────────────────────────────────────────
+
+
+async def _run_do_ci_fix(
+    fix_result,
+    review=("accept", "fine"),
+    retry_result=None,
+    sha_after="new",
+    push_ok=True,
+):
+    state_manager = AsyncMock()
+    runner = MagicMock()
+    runner.run_ci_fix = AsyncMock(return_value=fix_result)
+    runner.run_ci_fix_review = AsyncMock(return_value=review)
+    runner.run_ci_fix_retry = AsyncMock(return_value=retry_result)
+    shas = iter(["old", sha_after])
+
+    async def fake_sha(_path):
+        return next(shas)
+
+    with (
+        patch.object(fix_module, "AgentRunner", MagicMock(return_value=runner)),
+        patch.object(fix_module, "git_get_current_sha", fake_sha),
+        patch.object(
+            fix_module, "git_push_force_with_lease", AsyncMock(return_value=push_ok)
+        ) as push,
+        patch.object(
+            fix_module, "git_get_new_commits_since", AsyncMock(return_value=["n1"])
+        ),
+    ):
+        ok = await fix_module._do_ci_fix(
+            "foo/bar", 42, "feat", "/clone", "/log", "failures", state_manager, "t",
+        )
+    return ok, push, state_manager, runner
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_done_with_changes_pushes():
+    ok, push, sm, _runner = await _run_do_ci_fix("Fixed it.\nDONE")
+    assert ok is True
+    push.assert_awaited_once()
+    sm.record_our_commits.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_done_without_changes_does_not_push():
+    ok, push, _sm, _runner = await _run_do_ci_fix("DONE", sha_after="old")
+    assert ok is True
+    push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_rejected_push_is_failure_and_not_recorded():
+    ok, _push, sm, _runner = await _run_do_ci_fix("DONE", push_ok=False)
+    assert ok is False
+    sm.record_our_commits.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_unfixable_accepted_review_gives_up():
+    ok, push, _sm, runner = await _run_do_ci_fix(
+        "UNFIXABLE", review=("accept", "genuinely unrelated"),
+    )
+    assert ok is False
+    push.assert_not_awaited()
+    runner.run_ci_fix_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_unfixable_rejected_review_retries_and_pushes():
+    ok, push, _sm, runner = await _run_do_ci_fix(
+        "UNFIXABLE", review=("reject", "you must fix this"), retry_result="DONE",
+    )
+    assert ok is True
+    runner.run_ci_fix_retry.assert_awaited_once()
+    push.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_unfixable_twice_gives_up():
+    ok, push, _sm, _runner = await _run_do_ci_fix(
+        "UNFIXABLE", review=("reject", "fix it"), retry_result="Still UNFIXABLE\nUNFIXABLE",
+    )
+    assert ok is False
+    push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_none_result_is_failure():
+    ok, push, _sm, _runner = await _run_do_ci_fix(None)
+    assert ok is False
+    push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ci_fix_mentioning_unfixable_midtext_is_not_a_refusal():
+    """Regression: an agent that fixed the problem but mentioned the word
+    UNFIXABLE mid-narration was diverted into the refusal/review path."""
+    ok, _push, _sm, runner = await _run_do_ci_fix(
+        "At first this looked UNFIXABLE, but the flake was in this PR.\nDONE"
+    )
+    assert ok is True
+    runner.run_ci_fix_review.assert_not_awaited()
 
 
 class _Stop(Exception):
