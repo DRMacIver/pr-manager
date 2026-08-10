@@ -23,6 +23,9 @@ from pathlib import Path
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 LOGIN_WORKSPACE = Path.home() / ".cache" / "pr-manager" / "claude-login-workspace"
 
+_POLL_INTERVAL_SECONDS = 1.0
+_DEFAULT_LOGIN_TIMEOUT_SECONDS = 15 * 60
+
 
 def is_logged_in() -> bool:
     if not CREDENTIALS_PATH.exists():
@@ -34,7 +37,9 @@ def is_logged_in() -> bool:
     return bool(data)
 
 
-def ensure_logged_in() -> None:
+def ensure_logged_in(
+    timeout_seconds: float = _DEFAULT_LOGIN_TIMEOUT_SECONDS,
+) -> None:
     if platform.system() != "Linux" or is_logged_in():
         return
 
@@ -67,7 +72,15 @@ def ensure_logged_in() -> None:
     print("Opened 'claude-login' tmux window - complete login there.", flush=True)
     print("Waiting for credentials...", flush=True)
 
+    deadline = time.monotonic() + timeout_seconds
     while not is_logged_in():
-        time.sleep(1)
+        if time.monotonic() >= deadline:
+            print(
+                f"No login detected after {timeout_seconds / 60:.0f} minutes "
+                "— giving up. Log in with `claude` and restart pr-manager.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        time.sleep(_POLL_INTERVAL_SECONDS)
 
     print("Login detected. Starting pr-manager.", flush=True)

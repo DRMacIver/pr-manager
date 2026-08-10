@@ -15,6 +15,10 @@ def main() -> None:
         _main()
     except SystemExit:
         raise
+    except KeyboardInterrupt:
+        # Never trap Ctrl-C into the press-q prompt below — the user is
+        # already trying to leave.
+        sys.exit(130)
     except BaseException:
         traceback.print_exc()
         print("\nPress q to exit...", flush=True)
