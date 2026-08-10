@@ -55,6 +55,11 @@ async def poll_loop(
     """
     del recent_minutes  # retained in signature for API stability
     while True:
+        # Clear before the pass, not after: a nudge that arrives while we
+        # are polling means "state changed, poll again" and must survive
+        # into the next wait.
+        if nudge is not None:
+            nudge.clear()
         try:
             repos = await state_manager.get_repos()
             if not repos:
@@ -167,7 +172,6 @@ async def _sleep_between_polls(
 ) -> None:
     """Wait for the next poll cycle; a set nudge event wakes us early."""
     if nudge is not None:
-        nudge.clear()
         try:
             await asyncio.wait_for(nudge.wait(), timeout=minutes * 60)
         except asyncio.TimeoutError:
