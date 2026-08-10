@@ -34,6 +34,11 @@ def _log(text: str, level: str = "info") -> None:
     print(f"[{_ts()}] {prefix} {text}", flush=True)
 
 
+async def _wait(seconds: float) -> None:
+    """Sleep between poll iterations (separate function so tests can patch it)."""
+    await asyncio.sleep(seconds)
+
+
 def parse_pr_url(url: str) -> tuple[str, int]:
     """Parse a GitHub PR URL into (owner/repo, pr_number)."""
     m = re.match(r"https?://github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
@@ -95,7 +100,7 @@ async def run_fix(url: str, poll_interval: int = 60) -> None:
                 _log("Rebase failed — exiting", "error")
                 sys.exit(1)
             _log("Rebased and pushed — waiting for CI")
-            await asyncio.sleep(poll_interval)
+            await _wait(poll_interval)
             continue
 
         # 2. Check CI status.
@@ -107,7 +112,12 @@ async def run_fix(url: str, poll_interval: int = 60) -> None:
 
         if check_status == "pending":
             _log("CI checks still running — waiting")
-            await asyncio.sleep(poll_interval)
+            await _wait(poll_interval)
+            continue
+
+        if check_status == "error":
+            _log(f"Could not determine CI status: {failures}", "warn")
+            await _wait(poll_interval)
             continue
 
         if check_status == "no_checks":
@@ -125,7 +135,7 @@ async def run_fix(url: str, poll_interval: int = 60) -> None:
                     sys.exit(1)
             else:
                 _log("No checks reported yet — waiting")
-            await asyncio.sleep(poll_interval)
+            await _wait(poll_interval)
             continue
 
         # 3. CI is failing — fix it.
@@ -138,7 +148,7 @@ async def run_fix(url: str, poll_interval: int = 60) -> None:
             _log("CI fix failed — exiting", "error")
             sys.exit(1)
         _log("CI fix complete — waiting for checks")
-        await asyncio.sleep(poll_interval)
+        await _wait(poll_interval)
 
 
 async def _do_rebase(

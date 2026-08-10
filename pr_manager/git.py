@@ -69,8 +69,18 @@ async def gh_list_prs(repo: str) -> list[dict]:
     return json.loads(out) if out else []
 
 
+# Check states that mean "this check passed" / "this check is still running".
+# Anything outside these two sets — FAILURE, ERROR, CANCELLED, TIMED_OUT,
+# ACTION_REQUIRED, STARTUP_FAILURE, STALE, or a state we've never heard of —
+# counts as failing: an unknown state must never read as success.
+_PASSING_CHECK_STATES = frozenset({"SUCCESS", "SKIPPED", "NEUTRAL"})
+_RUNNING_CHECK_STATES = frozenset(
+    {"IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED", "EXPECTED"}
+)
+
+
 async def gh_pr_check_status(repo: str, pr_number: int) -> tuple[str, str]:
-    """Return ("green" | "pending" | "failing" | "no_checks", details)."""
+    """Return ("green" | "pending" | "failing" | "no_checks" | "error", details)."""
     rc, out, stderr = await run_cmd([
         "gh", "pr", "checks", str(pr_number), "--repo", repo,
         "--json", "name,state",
@@ -78,18 +88,20 @@ async def gh_pr_check_status(repo: str, pr_number: int) -> tuple[str, str]:
     if rc != 0:
         if "no checks reported" in (stderr or "").lower() or "no checks reported" in (out or "").lower():
             return "no_checks", ""
-        return "pending", ""
+        return "error", (stderr or out or "gh pr checks failed").strip()
     if not out:
         return "no_checks", ""
     checks = json.loads(out)
     if not checks:
         return "no_checks", ""
-    failures = [c for c in checks if c.get("state") == "FAILURE"]
+    failures = [
+        c for c in checks
+        if c.get("state") not in _PASSING_CHECK_STATES | _RUNNING_CHECK_STATES
+    ]
     if failures:
         details = "\n".join(f"- {c['name']}: {c['state']}" for c in failures)
         return "failing", details
-    in_progress = [c for c in checks if c.get("state") in ("IN_PROGRESS", "QUEUED", "PENDING", "WAITING")]
-    if in_progress:
+    if any(c.get("state") in _RUNNING_CHECK_STATES for c in checks):
         return "pending", ""
     return "green", ""
 

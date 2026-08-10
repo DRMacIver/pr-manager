@@ -37,7 +37,7 @@ async def compute_pr_status(repo: str, pr_data: dict, clone_path: Path) -> str:
     if behind > 0:
         return "behind"
     check_status, _details = await gh_pr_check_status(repo, int(pr_data["number"]))
-    # gh_pr_check_status returns: green | pending | failing | no_checks
+    # gh_pr_check_status returns: green | pending | failing | no_checks | error
     return check_status
 
 
