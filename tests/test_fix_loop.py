@@ -32,6 +32,88 @@ def test_final_token(result, token):
     assert _final_token(result) == token
 
 
+# ── parse_pr_url ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://github.com/foo/bar/pull/123", ("foo/bar", 123)),
+        ("http://github.com/a-b/c.d/pull/1", ("a-b/c.d", 1)),
+    ],
+)
+def test_parse_pr_url_valid(url, expected):
+    assert fix_module.parse_pr_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/foo/bar",
+        "https://gitlab.com/foo/bar/pull/1",
+        "not a url",
+        "https://github.com/foo/bar/pull/abc",
+    ],
+)
+def test_parse_pr_url_invalid(url):
+    with pytest.raises(ValueError):
+        fix_module.parse_pr_url(url)
+
+
+# ── run_fix loop priorities ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_behind_target_rebases_before_looking_at_checks():
+    with (
+        patch.object(fix_module, "_fetch_pr_data", AsyncMock(return_value=_pr_data())),
+        patch.object(fix_module, "git_update_pristine", AsyncMock()),
+        patch.object(fix_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(fix_module, "git_sync_branch_to_origin", AsyncMock(return_value=True)),
+        patch.object(fix_module, "git_commits_behind", AsyncMock(return_value=3)),
+        patch.object(fix_module, "gh_pr_check_status", AsyncMock()) as checks,
+        patch.object(fix_module, "_do_rebase", AsyncMock(return_value=True)) as rebase,
+        patch.object(fix_module, "_wait", _stop_wait),
+    ):
+        with pytest.raises(_Stop):
+            await fix_module.run_fix("https://github.com/foo/bar/pull/42")
+
+    rebase.assert_awaited_once()
+    checks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_green_checks_finish_the_run():
+    with (
+        patch.object(fix_module, "_fetch_pr_data", AsyncMock(return_value=_pr_data())),
+        patch.object(fix_module, "git_update_pristine", AsyncMock()),
+        patch.object(fix_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(fix_module, "git_sync_branch_to_origin", AsyncMock(return_value=True)),
+        patch.object(fix_module, "git_commits_behind", AsyncMock(return_value=0)),
+        patch.object(fix_module, "gh_pr_check_status", AsyncMock(return_value=("green", ""))),
+        patch.object(fix_module, "_do_ci_fix", AsyncMock()) as fixer,
+        patch.object(fix_module, "_wait", _stop_wait),
+    ):
+        await fix_module.run_fix("https://github.com/foo/bar/pull/42")
+
+    fixer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_closed_pr_exits_without_touching_git():
+    with (
+        patch.object(
+            fix_module, "_fetch_pr_data",
+            AsyncMock(return_value=_pr_data(state="MERGED")),
+        ),
+        patch.object(fix_module, "git_update_pristine", AsyncMock()) as pristine,
+    ):
+        with pytest.raises(SystemExit):
+            await fix_module.run_fix("https://github.com/foo/bar/pull/42")
+
+    pristine.assert_not_awaited()
+
+
 # ── _do_rebase ───────────────────────────────────────────────────────────────
 
 
