@@ -6,7 +6,10 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic",
-    "claude-agent-sdk",
+    # 0.2.134 bundles Claude Code CLI 2.1.226; older releases bundle CLIs
+    # that reject newer model aliases (e.g. 0.1.54 bundles 2.1.90, which
+    # predates "fable").
+    "claude-agent-sdk>=0.2.134",
     "textual>=0.80.0",
 ]
 
