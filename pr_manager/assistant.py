@@ -31,11 +31,12 @@ The return value of the last expression is automatically captured.
 branch, status, age, is_active, error_message, review_status, activity
 
 ### Agent inspection
-- `ctx.list_running_agents()` → list[dict] — running agent tasks (repo, pr_number, done, cancelled)
+- `ctx.list_running_agents()` → list[dict] — live sessions (repo, pr_number, window)
 - `ctx.read_agent_log(repo, pr_number, tail=50)` → str — last N log lines for an agent
 
 ### Agent control
-- `ctx.cancel_agent(repo, pr_number)` → bool — cancel a running agent, returns True if cancelled
+- `await ctx.cancel_agent(repo, pr_number)` → bool — stop a running session (kills a \
+fix session's tmux window), returns True if one was stopped
 
 ### UI control
 - `ctx.log(message, level="info")` — write to the TUI's log panel (levels: info, warn, error)

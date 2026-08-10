@@ -454,6 +454,8 @@ class PRManagerApp(App):
         self._recent_minutes = recent_minutes
         self._display_prs: list[PRDisplayInfo] = []
         self._active_tasks: dict[tuple[str, int], asyncio.Task] = {}
+        # Which tmux window each sentinel in _active_tasks watches.
+        self._session_windows: dict[tuple[str, int], str] = {}
         self._spinner_idx = 0
         self._poll_task: Optional[asyncio.Task] = None
         self._poll_nudge = asyncio.Event()
@@ -483,6 +485,42 @@ class PRManagerApp(App):
                       nudge=self._poll_nudge)
         )
         self.set_interval(0.12, self._tick_spinner)
+
+    # ── Session sentinels ────────────────────────────────────────────────
+
+    def _install_sentinel(self, key: tuple[str, int], window_name: str) -> asyncio.Task:
+        """Track a tmux session for a PR: while the sentinel task lives,
+        the poll loop treats the PR as busy. Bookkeeping is removed
+        automatically when the window closes."""
+        sentinel = asyncio.create_task(watch_tmux_window(window_name))
+        self._active_tasks[key] = sentinel
+        self._session_windows[key] = window_name
+
+        def _cleanup(task: asyncio.Task, *, key=key) -> None:
+            if self._active_tasks.get(key) is task:
+                self._active_tasks.pop(key, None)
+                self._session_windows.pop(key, None)
+
+        sentinel.add_done_callback(_cleanup)
+        return sentinel
+
+    async def stop_session(self, key: tuple[str, int]) -> bool:
+        """Stop an active session for a PR. Returns True if one was stopped.
+
+        For fix sessions the real work runs in the tmux window, not in the
+        sentinel task — so the window is killed too; cancelling only the
+        sentinel would leave `pr-manager fix` running while the UI claims
+        it stopped. Interactive claude windows belong to the user and are
+        left alive; only their sentinel is dropped.
+        """
+        task = self._active_tasks.get(key)
+        if not task or task.done():
+            return False
+        window = self._session_windows.get(key, "")
+        if window.startswith("fix-"):
+            await run_cmd(["tmux", "kill-window", "-t", window], check=False)
+        task.cancel()
+        return True
 
     # ── Spinner ──────────────────────────────────────────────────────────
 
@@ -710,11 +748,10 @@ class PRManagerApp(App):
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
         key = (pr.repo, pr.number)
-        task = self._active_tasks.get(key)
-        if task and not task.done():
-            task.cancel()
+        active_window = self._session_windows.get(key, "")
+        if await self.stop_session(key) and active_window.startswith("fix-"):
             self.post_message(AppLogMessage(
-                f"Interrupted automated agent for PR #{pr.number}", "warn"
+                f"Stopped fix session for PR #{pr.number}", "warn"
             ))
         worktree = self._resolve_worktree(pr)
         if not worktree.exists():
@@ -747,8 +784,7 @@ class PRManagerApp(App):
             return
         # Install a sentinel task so the poll loop skips this PR while the
         # user's interactive Claude session is open.
-        sentinel = asyncio.create_task(watch_tmux_window(window_name))
-        self._active_tasks[key] = sentinel
+        self._install_sentinel(key, window_name)
 
     async def action_fix(self) -> None:
         if not self._check_tmux():
@@ -794,8 +830,7 @@ class PRManagerApp(App):
                 f"tmux new-window failed (rc={rc}): {stderr}", "error",
             ))
             return
-        sentinel = asyncio.create_task(watch_tmux_window(window_name))
-        self._active_tasks[(pr.repo, pr.number)] = sentinel
+        self._install_sentinel((pr.repo, pr.number), window_name)
         self.post_message(AppLogMessage(
             f"Started fix session for PR #{pr.number} ({pr.repo})", "info",
         ))

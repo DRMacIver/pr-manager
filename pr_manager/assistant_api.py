@@ -67,15 +67,15 @@ class AssistantContext:
     # ── Agent inspection ────────────────────────────────────────────────
 
     def list_running_agents(self) -> list[dict[str, Any]]:
-        """List all currently running automated agent tasks."""
+        """List live fix/claude sessions (repo, pr_number, tmux window)."""
         return [
             {
                 "repo": repo,
                 "pr_number": pr_num,
-                "done": task.done(),
-                "cancelled": task.cancelled(),
+                "window": self._app._session_windows.get((repo, pr_num), ""),
             }
             for (repo, pr_num), task in self._active_tasks.items()
+            if not task.done()
         ]
 
     def read_agent_log(self, repo: str, pr_number: int, tail: int = 50) -> str:
@@ -90,14 +90,11 @@ class AssistantContext:
 
     # ── Agent control ───────────────────────────────────────────────────
 
-    def cancel_agent(self, repo: str, pr_number: int) -> bool:
-        """Cancel a running automated agent task. Returns True if cancelled."""
-        key = (repo, pr_number)
-        task = self._active_tasks.get(key)
-        if task and not task.done():
-            task.cancel()
-            return True
-        return False
+    async def cancel_agent(self, repo: str, pr_number: int) -> bool:
+        """Stop a running session for a PR (kills a fix session's tmux
+        window, so the fix process itself stops). Returns True if a live
+        session was stopped."""
+        return await self._app.stop_session((repo, pr_number))
 
     # ── UI control ──────────────────────────────────────────────────────
 
