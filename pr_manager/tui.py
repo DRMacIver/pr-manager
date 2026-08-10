@@ -478,7 +478,10 @@ class PRManagerApp(App):
         settings = await self._state_manager.get_settings()
         self.theme = settings.theme
         table = self.query_one(DataTable)
-        table.add_columns("PR#", "Repo", "Branch", "Status", "Review", "Activity", "Age")
+        column_keys = table.add_columns(
+            "PR#", "Repo", "Branch", "Status", "Review", "Activity", "Age",
+        )
+        self._status_column_key = column_keys[3]
         host = TuiPollHost(self)
         self._poll_task = asyncio.create_task(
             poll_loop(host, self._state_manager, self._poll_interval, self._recent_minutes,
@@ -525,8 +528,31 @@ class PRManagerApp(App):
     # ── Spinner ──────────────────────────────────────────────────────────
 
     def _tick_spinner(self) -> None:
+        """Animate the status cell of rows with live sessions.
+
+        A no-op while nothing is active, and only updates the affected
+        cells — rebuilding the whole table 8x/sec reset the scroll
+        position and burned CPU permanently.
+        """
+        active = {k for k, t in self._active_tasks.items() if not t.done()}
+        if not active:
+            return
         self._spinner_idx = (self._spinner_idx + 1) % len(SPINNER_CHARS)
-        self._refresh_table()
+        table = self.query_one(DataTable)
+        for pr in self._display_prs:
+            if (pr.repo, pr.number) not in active:
+                continue
+            row_key = f"{pr.repo}:{pr.number or pr.branch}"
+            try:
+                table.update_cell(
+                    row_key,
+                    self._status_column_key,
+                    self._format_status("fixing", is_active=True),
+                    update_width=False,
+                )
+            except Exception:
+                # Row not currently in the table (mid list-update).
+                pass
 
     # ── Table rendering ──────────────────────────────────────────────────
 
@@ -560,7 +586,7 @@ class PRManagerApp(App):
             task = self._active_tasks.get(key)
             is_fixing = bool(task and not task.done())
             status = "fixing" if is_fixing else pr.status
-            is_active = is_fixing or pr.is_active
+            is_active = is_fixing
             table.add_row(
                 str(pr.number) if pr.number else "—",
                 pr.repo,
@@ -595,8 +621,7 @@ class PRManagerApp(App):
                     branch=pr.branch,
                     status=message.status,
                     age=pr.age,
-                    is_active=False,
-                    error_message=message.error,
+                        error_message=message.error,
                     review_status=pr.review_status,
                     activity=pr.activity,
                 )

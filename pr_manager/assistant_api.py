@@ -56,7 +56,6 @@ class AssistantContext:
                 "branch": pr.branch,
                 "status": pr.status,
                 "age": pr.age,
-                "is_active": pr.is_active,
                 "error_message": pr.error_message,
                 "review_status": pr.review_status,
                 "activity": pr.activity,

@@ -68,7 +68,6 @@ async def build_display_list(
                 branch=pr_state.branch or "",
                 status=pr_state.status,
                 age=format_age(pr_state.created_at),
-                is_active=False,
                 error_message=pr_state.error_message,
                 review_status=format_review_status(pr_state),
                 activity=format_activity(pr_state),
@@ -82,7 +81,6 @@ async def build_display_list(
                 branch=branch,
                 status="local",
                 age="",
-                is_active=False,
                 error_message=None,
             ))
     result.sort(key=lambda p: (p.repo, -p.number))

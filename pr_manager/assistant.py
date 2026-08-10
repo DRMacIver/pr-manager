@@ -28,7 +28,7 @@ The return value of the last expression is automatically captured.
 - `await ctx.list_prs(repo=None)` → dict — all PR states (nested: repo → pr_number → state dict)
 - `await ctx.get_pr(repo, pr_number)` → dict | None — full state dict for one PR
 - `ctx.get_display_prs()` → list[dict] — current table rows with keys: repo, number, title, \
-branch, status, age, is_active, error_message, review_status, activity
+branch, status, age, error_message, review_status, activity
 
 ### Agent inspection
 - `ctx.list_running_agents()` → list[dict] — live sessions (repo, pr_number, window)

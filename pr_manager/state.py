@@ -73,7 +73,6 @@ class PRDisplayInfo:
     branch: str
     status: str
     age: str
-    is_active: bool
     error_message: Optional[str]
     review_status: str = ""
     activity: str = ""
