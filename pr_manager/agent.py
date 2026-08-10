@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -28,6 +29,20 @@ from .state import PRState, StateManager
 
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+# Appended to every agent prompt.  The agent runs in a single query() with
+# nothing to re-invoke it, so a turn that ends waiting on a background task
+# or scheduled wakeup is simply over — the notification never arrives.
+_EXECUTION_NOTES = (
+    "Execution environment notes:\n"
+    "- You are running unattended in a one-shot session. Nothing can re-invoke\n"
+    "  you after your turn ends, so never end your turn while waiting for\n"
+    "  anything.\n"
+    "- Run every command in the foreground and wait for it to complete, even\n"
+    "  slow ones. Do not use run_in_background and do not schedule wakeups —\n"
+    "  background task notifications and wakeups will never be delivered."
+)
 
 
 class AgentLogger:
@@ -154,9 +169,15 @@ class AgentRunner:
         else:
             session_id = None
 
+        prompt = f"{prompt}\n\n{_EXECUTION_NOTES}"
+
         options = ClaudeAgentOptions(
             cwd=str(self._worktree_path),
             allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+            # bypassPermissions leaves every tool available (allowed_tools only
+            # auto-approves), so tools that end the turn expecting a re-invoke
+            # must be banned outright.
+            disallowed_tools=["ScheduleWakeup"],
             permission_mode="bypassPermissions",
             resume=session_id,
             max_turns=max_turns,
@@ -169,11 +190,12 @@ class AgentRunner:
 
         log = AgentLogger(self._log_path, tee_stdout=self._log_to_stdout)
         result_text: str | None = None
+        stream = query(prompt=prompt, options=options)
         try:
             log.write(f"[{_ts()}] === Agent started (session={session_id or 'new'}, cwd={self._worktree_path}) ===")
             log.write(f"[{_ts()}] Prompt: {prompt[:200]}...")
 
-            async for message in query(prompt=prompt, options=options):
+            async for message in stream:
                 if isinstance(message, SystemMessage):
                     log.write(f"[{_ts()}] [SYS] subtype={message.subtype} data={json.dumps(message.data, default=str)[:300]}")
                     if persist_session and message.subtype == "init":
@@ -253,5 +275,10 @@ class AgentRunner:
             return None
         finally:
             log.close()
+            # Breaking out of the stream leaves the generator suspended;
+            # close it here or interpreter shutdown trips over it with
+            # "aclose(): asynchronous generator is already running".
+            with contextlib.suppress(Exception):
+                await stream.aclose()
 
         return result_text
