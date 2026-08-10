@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import logging
 import os
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from typing import Optional
+from typing import Callable, Iterator, Optional, TypeVar
 
 from .constants import STATE_PATH
+
+log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -79,6 +87,16 @@ def _dict_to_pr_state(d: dict) -> PRState:
 
 
 class StateManager:
+    """Persistent app state backed by state.json.
+
+    Cross-process safety: `pr-manager run` (TUI) and `pr-manager fix`
+    hold separate StateManagers over the same file, concurrently.  Every
+    operation is therefore a fresh read-modify-write of the file under an
+    exclusive OS file lock — one process's writes are neither clobbered
+    by nor invisible to the other.  (Multi-call sequences such as a
+    get/upsert pair are still not transactional; single operations are.)
+    """
+
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._state = AppState()
@@ -90,24 +108,54 @@ class StateManager:
         self._nudge = event
 
     async def load(self) -> None:
-        async with self._lock:
-            if STATE_PATH.exists():
-                data = json.loads(STATE_PATH.read_text())
-                # Legacy `disabled_prs` / `hidden_prs` keys are ignored
-                # silently for forward-compat with old state files.
-                self._state = AppState(
-                    repos=data.get("repos", []),
-                    pr_state=data.get("pr_state", {}),
-                    local_branches=data.get("local_branches", {}),
-                    settings=_dict_to_settings(data.get("settings", {})),
-                )
-            else:
-                self._state = AppState()
+        await self._transact(lambda st: None, write=False)
+
+    @contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = STATE_PATH.with_suffix(".lock")
+        with open(lock_path, "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    def _reload_sync(self) -> None:
+        """Re-read state.json. Must be called under the file lock.
+
+        A corrupt file is set aside (state.json.corrupt-<ts>) and we
+        start fresh rather than crashing every command at startup.
+        """
+        if not STATE_PATH.exists():
+            self._state = AppState()
+            return
+        try:
+            data = json.loads(STATE_PATH.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            backup = STATE_PATH.with_name(
+                f"{STATE_PATH.name}.corrupt-{int(time.time())}"
+            )
+            os.replace(STATE_PATH, backup)
+            log.error(
+                "State file %s is corrupt (%s) — moved to %s, starting fresh",
+                STATE_PATH, e, backup,
+            )
+            self._state = AppState()
+            return
+        # Legacy keys (`disabled_prs`, `hidden_prs`, …) are ignored
+        # silently for forward-compat with old state files.
+        self._state = AppState(
+            repos=data.get("repos", []),
+            pr_state=data.get("pr_state", {}),
+            local_branches=data.get("local_branches", {}),
+            settings=_dict_to_settings(data.get("settings", {})),
+        )
 
     def _save_sync(self) -> None:
-        """Write state to disk atomically. Must be called while holding self._lock."""
+        """Write state to disk atomically. Must be called under the file lock."""
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = STATE_PATH.with_suffix(".tmp")
+        tmp = STATE_PATH.with_suffix(f".tmp{os.getpid()}")
         tmp.write_text(json.dumps(
             {
                 "repos": self._state.repos,
@@ -119,82 +167,108 @@ class StateManager:
         ))
         os.replace(tmp, STATE_PATH)
 
-    async def add_repo(self, repo: str) -> None:
+    async def _transact(self, fn: Callable[[AppState], T], *, write: bool) -> T:
+        """Run `fn` against freshly loaded state under the file lock,
+        saving afterwards when `write` is set."""
         async with self._lock:
-            if repo not in self._state.repos:
-                self._state.repos.append(repo)
-                self._save_sync()
+            with self._file_lock():
+                self._reload_sync()
+                result = fn(self._state)
+                if write:
+                    self._save_sync()
+                return result
+
+    async def add_repo(self, repo: str) -> None:
+        def mutate(st: AppState) -> None:
+            if repo not in st.repos:
+                st.repos.append(repo)
+
+        await self._transact(mutate, write=True)
         if self._nudge is not None:
             self._nudge.set()
 
     async def remove_repo(self, repo: str) -> None:
-        async with self._lock:
-            self._state.repos = [r for r in self._state.repos if r != repo]
-            self._state.pr_state.pop(repo, None)
-            self._save_sync()
+        def mutate(st: AppState) -> None:
+            st.repos = [r for r in st.repos if r != repo]
+            st.pr_state.pop(repo, None)
+
+        await self._transact(mutate, write=True)
 
     async def get_repos(self) -> list[str]:
-        async with self._lock:
-            return list(self._state.repos)
+        return await self._transact(lambda st: list(st.repos), write=False)
 
     async def get_pr_state(self, repo: str, pr_number: str) -> Optional[PRState]:
-        async with self._lock:
-            d = self._state.pr_state.get(repo, {}).get(str(pr_number))
+        def read(st: AppState) -> Optional[PRState]:
+            d = st.pr_state.get(repo, {}).get(str(pr_number))
             return _dict_to_pr_state(d) if d is not None else None
 
+        return await self._transact(read, write=False)
+
     async def get_all_pr_states(self, repo: str) -> dict[str, PRState]:
-        async with self._lock:
+        def read(st: AppState) -> dict[str, PRState]:
             return {
                 num: _dict_to_pr_state(d)
-                for num, d in self._state.pr_state.get(repo, {}).items()
+                for num, d in st.pr_state.get(repo, {}).items()
             }
 
+        return await self._transact(read, write=False)
+
     async def upsert_pr_state(self, repo: str, pr_number: str, state: PRState) -> None:
-        async with self._lock:
-            self._state.pr_state.setdefault(repo, {})[str(pr_number)] = asdict(state)
-            self._save_sync()
+        def mutate(st: AppState) -> None:
+            st.pr_state.setdefault(repo, {})[str(pr_number)] = asdict(state)
+
+        await self._transact(mutate, write=True)
 
     async def record_our_commits(self, repo: str, pr_number: str, shas: list[str]) -> None:
-        async with self._lock:
-            repo_map = self._state.pr_state.setdefault(repo, {})
+        def mutate(st: AppState) -> None:
+            repo_map = st.pr_state.setdefault(repo, {})
             pr_dict = repo_map.setdefault(str(pr_number), {})
             existing = set(pr_dict.get("our_commits", []))
             existing.update(shas)
             pr_dict["our_commits"] = list(existing)
-            self._save_sync()
+
+        await self._transact(mutate, write=True)
 
     async def remove_pr(self, repo: str, pr_number: str) -> None:
-        async with self._lock:
-            self._state.pr_state.get(repo, {}).pop(str(pr_number), None)
-            self._save_sync()
+        def mutate(st: AppState) -> None:
+            st.pr_state.get(repo, {}).pop(str(pr_number), None)
+
+        await self._transact(mutate, write=True)
 
     async def add_local_branch(self, repo: str, branch: str) -> None:
-        async with self._lock:
-            branches = self._state.local_branches.setdefault(repo, [])
+        def mutate(st: AppState) -> None:
+            branches = st.local_branches.setdefault(repo, [])
             if branch not in branches:
                 branches.append(branch)
-                self._save_sync()
+
+        await self._transact(mutate, write=True)
 
     async def remove_local_branch(self, repo: str, branch: str) -> None:
-        async with self._lock:
-            branches = self._state.local_branches.get(repo, [])
+        def mutate(st: AppState) -> None:
+            branches = st.local_branches.get(repo, [])
             if branch in branches:
                 branches.remove(branch)
-                self._save_sync()
+
+        await self._transact(mutate, write=True)
 
     async def get_local_branches(self, repo: str) -> list[str]:
-        async with self._lock:
-            return list(self._state.local_branches.get(repo, []))
+        return await self._transact(
+            lambda st: list(st.local_branches.get(repo, [])), write=False,
+        )
 
     async def get_all_local_branches(self) -> dict[str, list[str]]:
-        async with self._lock:
-            return {r: list(bs) for r, bs in self._state.local_branches.items()}
+        return await self._transact(
+            lambda st: {r: list(bs) for r, bs in st.local_branches.items()},
+            write=False,
+        )
 
     async def get_settings(self) -> Settings:
-        async with self._lock:
-            return Settings(**asdict(self._state.settings))
+        return await self._transact(
+            lambda st: Settings(**asdict(st.settings)), write=False,
+        )
 
     async def update_settings(self, settings: Settings) -> None:
-        async with self._lock:
-            self._state.settings = settings
-            self._save_sync()
+        def mutate(st: AppState) -> None:
+            st.settings = settings
+
+        await self._transact(mutate, write=True)
