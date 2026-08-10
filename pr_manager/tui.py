@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shlex
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -18,11 +20,38 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select
 
 from .constants import STATUS_STYLE, SPINNER_CHARS
-from .git import get_branch_clone_path, get_clone_path, get_log_path, git_create_branch_clone, git_update_pristine, run_cmd
+from .git import (
+    get_branch_clone_path,
+    get_branch_log_path,
+    get_clone_path,
+    get_log_path,
+    git_create_branch_clone,
+    git_update_pristine,
+    run_cmd,
+)
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
 
+log = logging.getLogger(__name__)
+
 _TMUX_WATCH_INTERVAL = 15  # seconds between tmux window checks
+_TMUX_WATCH_MAX_FAILURES = 3  # consecutive failures before giving up
+
+
+def log_path_for(pr: PRDisplayInfo) -> Path:
+    """Agent log path for a table row — PRs by number, local branches
+    (number 0) by branch name so they don't all share one file."""
+    if pr.number == 0:
+        return get_branch_log_path(pr.repo, pr.branch)
+    return get_log_path(pr.repo, pr.number)
+
+
+def linger_on_failure(cmd: str, label: str) -> str:
+    """Wrap a shell command so a failure stays visible in its tmux window."""
+    return (
+        f'{cmd} || {{ rc=$?; echo; echo "{label} exited with code $rc"; '
+        f'echo "Press enter to close..."; read _; }}'
+    )
 
 
 async def watch_tmux_window(window_name: str) -> None:
@@ -31,22 +60,29 @@ async def watch_tmux_window(window_name: str) -> None:
     Used as a sentinel task in ``_active_tasks``; while the task is alive
     the TUI overlays ``fixing`` on the PR's row (for a `f` fix session)
     or otherwise treats the PR as having a live interactive session.
+
+    Transient tmux failures (e.g. a restarting server) are tolerated for
+    a few checks — exiting on the first one dropped the overlay while the
+    session was still running.
     """
-    try:
-        while True:
-            await asyncio.sleep(_TMUX_WATCH_INTERVAL)
+    failures = 0
+    while True:
+        await asyncio.sleep(_TMUX_WATCH_INTERVAL)
+        try:
             rc, out, _ = await run_cmd(
                 ["tmux", "list-windows", "-F", "#W"],
                 check=False,
             )
-            if rc != 0:
+        except Exception:
+            rc, out = 1, ""
+        if rc != 0:
+            failures += 1
+            if failures >= _TMUX_WATCH_MAX_FAILURES:
                 return
-            if window_name not in out.strip().splitlines():
-                return
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        return
+            continue
+        failures = 0
+        if window_name not in out.strip().splitlines():
+            return
 
 
 # ── Textual messages ─────────────────────────────────────────────────────────
@@ -73,9 +109,17 @@ class AppLogMessage(Message):
         self.level = level
 
 
+# ── Modal base ───────────────────────────────────────────────────────────────
+
+class DismissOnEscapeScreen(ModalScreen):
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss()
+
+
 # ── Add-repo modal ───────────────────────────────────────────────────────────
 
-class NewBranchScreen(ModalScreen):
+class NewBranchScreen(DismissOnEscapeScreen):
     DEFAULT_CSS = """
     NewBranchScreen {
         align: center middle;
@@ -95,6 +139,7 @@ class NewBranchScreen(ModalScreen):
         super().__init__()
         self._state_manager = state_manager
         self._repos = repos
+        self._creating = False
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Static
@@ -111,6 +156,10 @@ class NewBranchScreen(ModalScreen):
 
     @on(Button.Pressed, "#nb-create")
     async def _create(self) -> None:
+        # The clone can take a while; without this guard a second press
+        # started a concurrent clone into the same path.
+        if self._creating:
+            return
         repo = self.query_one("#nb-repo", Input).value.strip()
         branch = self.query_one("#nb-branch", Input).value.strip()
         if "/" not in repo:
@@ -119,6 +168,10 @@ class NewBranchScreen(ModalScreen):
         if not branch:
             self.app.post_message(AppLogMessage("Branch name required", "error"))
             return
+        self._creating = True
+        create_btn = self.query_one("#nb-create", Button)
+        create_btn.disabled = True
+        create_btn.label = "Creating…"
         repos = await self._state_manager.get_repos()
         if repo not in repos:
             await self._state_manager.add_repo(repo)
@@ -130,16 +183,19 @@ class NewBranchScreen(ModalScreen):
             cmd = "claude"
             if settings.claude_permission_mode != "default":
                 cmd += f" --permission-mode {settings.claude_permission_mode}"
-            wrapped = f'{cmd} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
             await run_cmd([
                 "tmux", "new-window",
                 "-c", str(clone_path),
                 "-n", f"new-{branch}",
-                "sh", "-c", wrapped,
+                "sh", "-c", linger_on_failure(cmd, "claude"),
             ], check=False)
             self.app.post_message(AppLogMessage(f"Created branch {branch} in {repo}", "info"))
         except Exception as e:
             self.app.post_message(AppLogMessage(f"Failed to create branch: {e}", "error"))
+        finally:
+            self._creating = False
+            create_btn.disabled = False
+            create_btn.label = "Create"
         if self in self.app.screen_stack:
             self.dismiss()
 
@@ -147,12 +203,8 @@ class NewBranchScreen(ModalScreen):
     def _cancel(self) -> None:
         self.dismiss()
 
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            self.dismiss()
 
-
-class AddRepoScreen(ModalScreen):
+class AddRepoScreen(DismissOnEscapeScreen):
     DEFAULT_CSS = """
     AddRepoScreen {
         align: center middle;
@@ -197,14 +249,10 @@ class AddRepoScreen(ModalScreen):
     def _cancel(self) -> None:
         self.dismiss()
 
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            self.dismiss()
-
 
 # ── Settings modal ───────────────────────────────────────────────────────────
 
-class SettingsScreen(ModalScreen):
+class SettingsScreen(DismissOnEscapeScreen):
     DEFAULT_CSS = """
     SettingsScreen {
         align: center middle;
@@ -273,10 +321,6 @@ class SettingsScreen(ModalScreen):
                 btn.variant = "primary" if m == mode else "default"
             self.app.post_message(AppLogMessage(f"Permission mode set to: {mode}", "info"))
 
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            self.dismiss()
-
 
 # ── PR detail modal ──────────────────────────────────────────────────────────
 
@@ -340,7 +384,7 @@ class PRDetailScreen(ModalScreen):
     def _load_log(self) -> None:
         log_widget = self.query_one("#detail-log", RichLog)
         log_widget.clear()
-        log_path = get_log_path(self._pr.repo, self._pr.number)
+        log_path = log_path_for(self._pr)
         if log_path.exists():
             text = log_path.read_text()
             # Show last 200 lines
@@ -357,7 +401,7 @@ class PRDetailScreen(ModalScreen):
         self._load_log()
 
     def action_copy_log(self) -> None:
-        log_path = get_log_path(self._pr.repo, self._pr.number)
+        log_path = log_path_for(self._pr)
         if log_path.exists():
             text = log_path.read_text()
             lines = text.splitlines()
@@ -369,9 +413,6 @@ class PRDetailScreen(ModalScreen):
             ))
         else:
             self.app.post_message(AppLogMessage("No log file to copy", "warn"))
-
-    async def action_dismiss(self, result=None) -> None:
-        self.dismiss()
 
 
 # ── TUI app adapter ─────────────────────────────────────────────────────────
@@ -462,6 +503,10 @@ class PRManagerApp(App):
         self._state_manager.set_nudge(self._poll_nudge)
         self._assistant: Optional[Any] = None
         self._assistant_busy = False
+        # Strong reference: the event loop only holds weak refs to tasks,
+        # so a fire-and-forget chat task could be garbage-collected
+        # mid-flight, leaving _assistant_busy stuck True forever.
+        self._chat_task: Optional[asyncio.Task] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -621,7 +666,7 @@ class PRManagerApp(App):
                     branch=pr.branch,
                     status=message.status,
                     age=pr.age,
-                        error_message=message.error,
+                    error_message=message.error,
                     review_status=pr.review_status,
                     activity=pr.activity,
                 )
@@ -645,14 +690,25 @@ class PRManagerApp(App):
         return None
 
     async def _find_session_for_worktree(self, worktree: Path) -> Optional[str]:
-        """Find the most recent Claude session for a worktree directory."""
+        """Find the most recent Claude session for a worktree directory.
+
+        list_sessions scans session files on disk, so it runs in a thread;
+        failures are logged (a silent None here is indistinguishable from
+        "no session exists", which hid real errors)."""
         try:
             from claude_agent_sdk import list_sessions
-            sessions = list_sessions(directory=str(worktree), limit=1)
+
+            sessions = await asyncio.to_thread(
+                list_sessions, directory=str(worktree), limit=1,
+            )
             if sessions:
                 return sessions[0].session_id
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("list_sessions failed for %s: %s", worktree, e)
+            self.post_message(AppLogMessage(
+                f"Could not look up existing sessions ({e}) — starting fresh",
+                "warn",
+            ))
         return None
 
     @staticmethod
@@ -718,7 +774,9 @@ class PRManagerApp(App):
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
         url = f"https://github.com/{pr.repo}/pull/{pr.number}"
-        await run_cmd(["open", url], check=False)
+        # webbrowser knows the platform (xdg-open, open, …); the old
+        # hardcoded `open` binary only exists on macOS.
+        await asyncio.to_thread(webbrowser.open, url)
 
     async def action_open_terminal(self) -> None:
         if not self._check_tmux():
@@ -746,7 +804,7 @@ class PRManagerApp(App):
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
-        log_path = get_log_path(pr.repo, pr.number)
+        log_path = log_path_for(pr)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch()
         worktree = self._resolve_worktree(pr)
@@ -793,8 +851,7 @@ class PRManagerApp(App):
         if settings.claude_permission_mode != "default":
             cmd += f" --permission-mode {settings.claude_permission_mode}"
         window_name = f"claude-{pr.number or pr.branch}"
-        # Wrap so if claude crashes the error stays visible.
-        wrapped = f'{cmd} || {{ echo "claude exited with code $?"; echo "Press enter to close..."; read; }}'
+        wrapped = linger_on_failure(cmd, "claude")
         self.post_message(AppLogMessage(f"Running: {cmd}", "info"))
         rc, _, stderr = await run_cmd([
             "tmux", "new-window",
@@ -837,12 +894,7 @@ class PRManagerApp(App):
             "pr-manager", "fix", url,
         ]
         inner_cmd = " ".join(shlex.quote(p) for p in inner_parts)
-        wrapped = (
-            f'{inner_cmd} || {{ '
-            f'rc=$?; echo; echo "pr-manager fix exited with code $rc"; '
-            f'echo "Press enter to close..."; read _; '
-            f'}}'
-        )
+        wrapped = linger_on_failure(inner_cmd, "pr-manager fix")
         window_name = f"fix-{pr.number}"
         rc, _, stderr = await run_cmd([
             "tmux", "new-window",
@@ -958,7 +1010,7 @@ class PRManagerApp(App):
         chat_log = self.query_one("#chat-log", RichLog)
         chat_log.write(f"[bold cyan]You:[/bold cyan] {escape(text)}")
         self._assistant_busy = True
-        asyncio.create_task(self._process_chat(text))
+        self._chat_task = asyncio.create_task(self._process_chat(text))
 
     async def _process_chat(self, text: str) -> None:
         chat_log = self.query_one("#chat-log", RichLog)

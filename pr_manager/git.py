@@ -77,6 +77,11 @@ def get_log_path(repo: str, pr_number: int) -> Path:
     return LOGS_DIR / repo.replace("/", "-") / f"pr-{pr_number}.log"
 
 
+def get_branch_log_path(repo: str, branch: str) -> Path:
+    """Log path for a local branch that has no PR (and no PR number) yet."""
+    return LOGS_DIR / repo.replace("/", "-") / f"branch-{branch.replace('/', '-')}.log"
+
+
 # ── GitHub (via gh CLI) ──────────────────────────────────────────────────────
 
 async def gh_list_prs(repo: str) -> list[dict]:
