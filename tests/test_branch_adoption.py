@@ -9,7 +9,7 @@ a fresh clone.  This way:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -81,6 +81,57 @@ async def test_setup_pr_clone_creates_fresh_when_no_branch_clone(repos_dir):
     ):
         await git_setup_pr_clone("foo/bar", 42, "my-feature")
         mock_clone.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_setup_pr_clone_fetches_and_checks_out_pr_branch(repos_dir):
+    """A fresh PR clone must fetch from origin and then check out the PR
+    branch.
+
+    Regression test: the clone is created from the local pristine cache,
+    whose remote-tracking refs are NOT carried over as branches.  Without an
+    explicit fetch the PR branch is absent, and a silent (check=False)
+    checkout leaves the clone sitting on the default branch (main).  A later
+    `git rebase origin/main` then rebases main itself instead of the PR
+    branch — corrupting the local default branch and attempting a push that
+    branch protection rejects.
+    """
+    clone_path = get_clone_path("foo/bar", 42)
+
+    with (
+        patch("pr_manager.git._clone_from_pristine", AsyncMock()) as mock_clone,
+        patch("pr_manager.git.run_cmd", AsyncMock(return_value=(0, "", ""))) as mock_run,
+    ):
+        await git_setup_pr_clone("foo/bar", 42, "my-feature")
+        mock_clone.assert_called_once()
+
+    # Must fetch from origin so origin/my-feature exists before checkout.
+    assert (
+        call(["git", "fetch", "origin", "--prune"], cwd=clone_path)
+        in mock_run.call_args_list
+    ), "git_setup_pr_clone must fetch from origin before checking out the PR branch"
+
+    # The checkout must happen, must target the PR branch, and must NOT be
+    # check=False — a failure to land on the PR branch must raise rather than
+    # silently leave the clone on main.
+    checkout_calls = [
+        c for c in mock_run.call_args_list
+        if c.args and c.args[0][:2] == ["git", "checkout"]
+    ]
+    assert checkout_calls == [
+        call(["git", "checkout", "my-feature"], cwd=clone_path)
+    ], f"unexpected checkout calls: {checkout_calls}"
+
+    # The fetch must come before the checkout.
+    fetch_idx = next(
+        i for i, c in enumerate(mock_run.call_args_list)
+        if c.args and c.args[0][:2] == ["git", "fetch"]
+    )
+    checkout_idx = next(
+        i for i, c in enumerate(mock_run.call_args_list)
+        if c.args and c.args[0][:2] == ["git", "checkout"]
+    )
+    assert fetch_idx < checkout_idx, "fetch must precede checkout"
 
 
 @pytest.mark.asyncio

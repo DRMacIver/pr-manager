@@ -133,7 +133,13 @@ async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
         clone_path.symlink_to(branch_clone.resolve())
         return
     await _clone_from_pristine(repo, clone_path)
-    await run_cmd(["git", "checkout", branch], cwd=clone_path, check=False)
+    # The clone is made from the local pristine cache, whose remote-tracking
+    # refs are not carried over as branches, so the PR branch is absent until
+    # we fetch from the real origin.  The checkout must NOT be check=False:
+    # silently failing leaves the clone on the default branch (main), and a
+    # later `git rebase origin/main` would then rebase main itself.
+    await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path)
+    await run_cmd(["git", "checkout", branch], cwd=clone_path)
 
 
 async def git_default_branch(clone_path: Path) -> str:
