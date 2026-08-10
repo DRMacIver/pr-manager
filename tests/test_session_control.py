@@ -10,7 +10,7 @@ removed once done.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -96,6 +96,34 @@ async def test_sentinel_bookkeeping_cleared_when_window_closes(monkeypatch):
 
     assert KEY not in app._active_tasks
     assert KEY not in app._session_windows
+
+
+@pytest.mark.asyncio
+async def test_sentinel_completion_repaints_and_nudges_the_poll(monkeypatch):
+    """When a session ends, the row must not stay frozen on 'fixing'
+    until the next multi-minute poll: the table repaints immediately and
+    the poll loop is nudged for a fresh status."""
+    from pr_manager.state import Settings
+
+    async def instant_watch(window_name):
+        return
+
+    monkeypatch.setattr(tui_module, "watch_tmux_window", instant_watch)
+    sm = MagicMock()
+    sm.get_settings = AsyncMock(return_value=Settings())
+    app = PRManagerApp(sm, poll_interval=5)
+    refreshes: list[int] = []
+
+    with patch.object(tui_module, "poll_loop", AsyncMock()):
+        async with app.run_test():
+            monkeypatch.setattr(app, "_refresh_table", lambda: refreshes.append(1))
+            app._poll_nudge.clear()
+            sentinel = app._install_sentinel(KEY, "fix-42")
+            await sentinel
+            await asyncio.sleep(0)  # let the done callback run
+
+            assert refreshes, "table must repaint when the session ends"
+            assert app._poll_nudge.is_set(), "poll must be nudged for fresh status"
 
 
 @pytest.mark.asyncio

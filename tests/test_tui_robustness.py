@@ -135,3 +135,27 @@ async def test_new_branch_create_ignores_double_submit(monkeypatch):
     assert clone_calls == ["my-branch"], (
         f"double-submit started {len(clone_calls)} clones"
     )
+
+
+@pytest.mark.asyncio
+async def test_new_branch_create_recovers_when_state_manager_fails(monkeypatch):
+    """A failure before the clone (e.g. state-file I/O) must not leave the
+    dialog wedged with _creating stuck True and the button disabled."""
+    from pr_manager.tui import NewBranchScreen
+
+    sm = MagicMock()
+    sm.get_repos = AsyncMock(side_effect=RuntimeError("state io error"))
+    sm.get_settings = AsyncMock(return_value=Settings())
+
+    screen = NewBranchScreen(sm, ["foo/bar"])
+    app = _mk_app()
+    with patch.object(tui_module, "poll_loop", AsyncMock()):
+        async with app.run_test():
+            await app.push_screen(screen)
+            screen.query_one("#nb-repo").value = "foo/bar"
+            screen.query_one("#nb-branch").value = "my-branch"
+
+            await screen._create()
+
+            assert screen._creating is False
+

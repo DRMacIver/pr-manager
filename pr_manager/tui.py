@@ -172,10 +172,10 @@ class NewBranchScreen(DismissOnEscapeScreen):
         create_btn = self.query_one("#nb-create", Button)
         create_btn.disabled = True
         create_btn.label = "Creating…"
-        repos = await self._state_manager.get_repos()
-        if repo not in repos:
-            await self._state_manager.add_repo(repo)
         try:
+            repos = await self._state_manager.get_repos()
+            if repo not in repos:
+                await self._state_manager.add_repo(repo)
             await git_update_pristine(repo)
             clone_path = await git_create_branch_clone(repo, branch)
             await self._state_manager.add_local_branch(repo, branch)
@@ -520,6 +520,10 @@ class PRManagerApp(App):
     async def on_mount(self) -> None:
         settings = await self._state_manager.get_settings()
         self.theme = settings.theme
+        # Resolved once: App.query_one searches the ACTIVE screen, so
+        # looking the log up per-message crashes whenever a modal is on
+        # top of the main screen.
+        self._log_widget = self.query_one("#log", RichLog)
         table = self.query_one(DataTable)
         column_keys = table.add_columns(
             "PR#", "Repo", "Branch", "Status", "Review", "Activity", "Age",
@@ -546,6 +550,11 @@ class PRManagerApp(App):
             if self._active_tasks.get(key) is task:
                 self._active_tasks.pop(key, None)
                 self._session_windows.pop(key, None)
+                # Repaint now (else the row shows a frozen 'fixing' until
+                # the next poll) and nudge the poll for the real status.
+                if self.is_running:
+                    self._refresh_table()
+                self._poll_nudge.set()
 
         sentinel.add_done_callback(_cleanup)
         return sentinel
@@ -673,10 +682,9 @@ class PRManagerApp(App):
 
     @on(AppLogMessage)
     def handle_app_log_message(self, message: AppLogMessage) -> None:
-        log = self.query_one(RichLog)
         ts = datetime.now().strftime("%H:%M:%S")
         color = {"info": "white", "error": "red", "warn": "yellow"}.get(message.level, "white")
-        log.write(f"[dim]{ts}[/dim] [{color}]{message.text}[/]")
+        self._log_widget.write(f"[dim]{ts}[/dim] [{color}]{message.text}[/]")
 
     # ── Selected PR helper ───────────────────────────────────────────────
 

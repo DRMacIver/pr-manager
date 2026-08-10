@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .agent import AgentRunner
 from .git import (
+    DirtyWorkingTreeError,
     get_clone_path,
     get_log_path,
     gh_pr_check_status,
@@ -110,7 +111,20 @@ async def run_fix(url: str, poll_interval: int = 60) -> None:
         # 0. Adopt the remote's state. Humans may have pushed since the
         # last iteration; working from a stale local branch would end in
         # force-pushing their commits away.
-        synced = await git_sync_branch_to_origin(clone_path, branch)
+        try:
+            synced = await git_sync_branch_to_origin(clone_path, branch)
+        except DirtyWorkingTreeError:
+            _log(
+                "Working clone has uncommitted changes (an interactive "
+                "session?) — refusing to reset it. Commit/stash the "
+                "changes or close the session, then rerun fix.",
+                "error",
+            )
+            sys.exit(1)
+        except RuntimeError as e:
+            _log(f"Could not sync {branch} from origin: {e}", "warn")
+            await _wait(poll_interval)
+            continue
         if not synced:
             _log(f"origin/{branch} no longer exists — exiting", "error")
             sys.exit(1)

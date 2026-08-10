@@ -178,18 +178,31 @@ async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
     await run_cmd(["git", "checkout", branch], cwd=clone_path)
 
 
+class DirtyWorkingTreeError(RuntimeError):
+    """The working tree has uncommitted changes we refuse to destroy."""
+
+
 async def git_sync_branch_to_origin(clone_path: Path, branch: str) -> bool:
     """Make the local branch exactly match origin/<branch>.
 
-    The remote is the source of truth: anything local-only (stale state
-    from an earlier run, leftovers of a crashed agent) is discarded.
+    The remote is the source of truth: local-only COMMITS (stale state
+    from an earlier run, leftovers of a crashed agent) are discarded.
     Without this, an agent can rebase a stale local branch and — because
     the loop fetches first, re-arming the force-with-lease lease —
     force-push commits that humans pushed in the meantime out of
     existence.
 
+    Uncommitted changes are a different matter: the clone may be a
+    symlink into the user's branch clone with an interactive session in
+    it, and reset --hard would silently eat their edits — so a dirty
+    tree raises DirtyWorkingTreeError instead.
+
     Returns False when origin/<branch> no longer exists.
     """
+    if await asyncio.to_thread(_has_uncommitted_changes, clone_path):
+        raise DirtyWorkingTreeError(
+            f"{clone_path} has uncommitted changes — refusing to reset"
+        )
     await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path)
     rc, _, _ = await run_cmd(
         ["git", "rev-parse", "--verify", f"origin/{branch}"],

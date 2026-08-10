@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from pr_manager import fix as fix_module
-from pr_manager.git import git_sync_branch_to_origin
+from pr_manager.git import DirtyWorkingTreeError, git_sync_branch_to_origin
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -91,6 +91,66 @@ async def test_sync_discards_stale_local_commits(git_remote_and_clone):
 
     assert synced is True
     assert _git(clone, "rev-parse", "HEAD") == remote_sha
+
+
+@pytest.mark.asyncio
+async def test_sync_refuses_to_touch_a_dirty_tree(git_remote_and_clone):
+    """Uncommitted changes mean a human (or interactive session) is
+    working in this tree — the PR clone can be a symlink into the user's
+    branch clone. reset --hard must never eat that work."""
+    origin, clone = git_remote_and_clone
+    (clone / "feat.txt").write_text("uncommitted human edit")
+
+    with pytest.raises(DirtyWorkingTreeError):
+        await git_sync_branch_to_origin(clone, "feature")
+
+    assert (clone / "feat.txt").read_text() == "uncommitted human edit"
+
+
+@pytest.mark.asyncio
+async def test_fix_loop_exits_cleanly_on_dirty_tree():
+    with (
+        patch.object(fix_module, "_fetch_pr_data", AsyncMock(return_value={
+            "number": 42, "title": "t", "headRefName": "feature",
+            "baseRefName": "main", "state": "OPEN",
+        })),
+        patch.object(fix_module, "git_update_pristine", AsyncMock()),
+        patch.object(fix_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(
+            fix_module, "git_sync_branch_to_origin",
+            AsyncMock(side_effect=DirtyWorkingTreeError("dirty")),
+        ),
+        patch.object(fix_module, "_do_rebase", AsyncMock()) as rebase,
+        patch.object(fix_module, "_do_ci_fix", AsyncMock()) as fixer,
+    ):
+        with pytest.raises(SystemExit):
+            await fix_module.run_fix("https://github.com/foo/bar/pull/42")
+
+    rebase.assert_not_awaited()
+    fixer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fix_loop_retries_on_transient_sync_failure():
+    """A network hiccup during the sync fetch must wait and retry, not
+    crash the whole fix session with a traceback."""
+    with (
+        patch.object(fix_module, "_fetch_pr_data", AsyncMock(return_value={
+            "number": 42, "title": "t", "headRefName": "feature",
+            "baseRefName": "main", "state": "OPEN",
+        })),
+        patch.object(fix_module, "git_update_pristine", AsyncMock()),
+        patch.object(fix_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(
+            fix_module, "git_sync_branch_to_origin",
+            AsyncMock(side_effect=RuntimeError("ssh: connection reset")),
+        ),
+        patch.object(fix_module, "_wait", AsyncMock(side_effect=_Stop())) as wait,
+    ):
+        with pytest.raises(_Stop):
+            await fix_module.run_fix("https://github.com/foo/bar/pull/42")
+
+    wait.assert_awaited_once()
 
 
 @pytest.mark.asyncio

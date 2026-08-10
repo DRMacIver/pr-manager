@@ -166,16 +166,24 @@ class StateManager:
         ))
         os.replace(tmp, STATE_PATH)
 
+    def _transact_sync(self, fn: Callable[[AppState], T], write: bool) -> T:
+        with self._file_lock():
+            self._reload_sync()
+            result = fn(self._state)
+            if write:
+                self._save_sync()
+            return result
+
     async def _transact(self, fn: Callable[[AppState], T], *, write: bool) -> T:
         """Run `fn` against freshly loaded state under the file lock,
-        saving afterwards when `write` is set."""
+        saving afterwards when `write` is set.
+
+        Runs in a thread: the flock wait is uninterruptible, so if
+        another process wedged while holding the lock, taking it on the
+        event loop would freeze the whole TUI.
+        """
         async with self._lock:
-            with self._file_lock():
-                self._reload_sync()
-                result = fn(self._state)
-                if write:
-                    self._save_sync()
-                return result
+            return await asyncio.to_thread(self._transact_sync, fn, write)
 
     async def add_repo(self, repo: str) -> None:
         def mutate(st: AppState) -> None:
