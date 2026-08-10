@@ -80,7 +80,10 @@ async def poll_loop(
                     for old_num, _ in (await state_manager.get_all_pr_states(repo)).items():
                         if old_num not in current_numbers:
                             try:
-                                deleted = remove_clone(get_clone_path(repo, int(old_num)))
+                                # In a thread: walks the tree and runs git.
+                                deleted = await asyncio.to_thread(
+                                    remove_clone, get_clone_path(repo, int(old_num))
+                                )
                             except Exception as e:
                                 host.on_log(f"Failed to clean up PR #{old_num} ({repo}): {e}", "warn")
                                 continue

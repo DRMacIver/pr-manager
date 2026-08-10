@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
-log = logging.getLogger(__name__)
-
 from .constants import REPOS_DIR, LOGS_DIR
+
+log = logging.getLogger(__name__)
 
 
 async def run_cmd(
@@ -202,12 +204,44 @@ async def git_create_branch_clone(repo: str, branch: str) -> Path:
 _ONE_DAY = 86400
 
 
+def _newest_mtime(root: Path) -> float:
+    """Newest mtime of any entry in the tree (the root's own mtime doesn't
+    change when nested files do)."""
+    newest = root.stat().st_mtime
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            try:
+                mtime = os.lstat(os.path.join(dirpath, name)).st_mtime
+            except OSError:
+                continue
+            newest = max(newest, mtime)
+    return newest
+
+
+def _has_uncommitted_changes(clone_path: Path) -> bool:
+    """True if the git tree is dirty — or if we can't tell (be conservative)."""
+    if not (clone_path / ".git").exists():
+        return False
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=clone_path, capture_output=True, text=True,
+    )
+    return status.returncode != 0 or bool(status.stdout.strip())
+
+
 def remove_clone(clone_path: Path) -> bool:
     """Remove a working clone directory.
 
     Returns True if the directory was deleted, False if it was kept.
-    As a safety net, refuses to delete directories modified within the
-    last day — logs a warning instead.
+    Safety nets, in order:
+    - never delete a tree with uncommitted git changes (unsaved work),
+      regardless of age;
+    - never delete a tree where any file was modified within the last day.
+
+    Committed-but-unpushed work older than a day is not protected: with
+    squash-merge workflows, local commits are routinely unreachable from
+    remote refs, so an "unpushed commits" check would block cleanup of
+    every merged PR forever.
 
     Symlinks (valid or broken) are always safe to unlink because the
     actual data lives in the target directory.
@@ -217,7 +251,12 @@ def remove_clone(clone_path: Path) -> bool:
         return True
     if not clone_path.exists():
         return True
-    age = time.time() - clone_path.stat().st_mtime
+    if _has_uncommitted_changes(clone_path):
+        log.warning(
+            "Refusing to delete %s — tree has uncommitted changes", clone_path,
+        )
+        return False
+    age = time.time() - _newest_mtime(clone_path)
     if age < _ONE_DAY:
         log.warning(
             "Refusing to delete %s — modified %.1f hours ago (< 24h)",

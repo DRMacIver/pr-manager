@@ -66,20 +66,68 @@ def test_remove_clone_refuses_to_delete_recently_modified_directory(tmp_path):
     )
 
 
+def _backdate_tree(root: Path, days: float = 2) -> None:
+    """Set every mtime under root (inclusive) to `days` days ago."""
+    old_time = time.time() - days * 86400
+    for path in [root, *root.rglob("*")]:
+        os.utime(path, (old_time, old_time), follow_symlinks=False)
+
+
 def test_remove_clone_deletes_old_directory(tmp_path):
     """remove_clone should still delete directories older than a day."""
     clone = tmp_path / "pr-99"
     clone.mkdir()
     (clone / "file.txt").write_text("stale")
-
-    # Backdate the mtime to 2 days ago.
-    old_time = time.time() - 2 * 86400
-    os.utime(clone, (old_time, old_time))
+    _backdate_tree(clone)
 
     remove_clone(clone)
 
     assert not clone.exists(), (
         "remove_clone should delete directories older than a day"
+    )
+
+
+def test_remove_clone_sees_recent_work_in_nested_files(tmp_path):
+    """A recently modified file deep in the tree must protect the clone.
+
+    Regression: the guard used to look only at the clone ROOT directory's
+    mtime, which does not change when files in subdirectories (including
+    .git/) are modified — so a clone with ten-minute-old commits could be
+    deleted if the root directory entry itself was old.
+    """
+    clone = tmp_path / "pr-7"
+    nested = clone / "src" / "deep"
+    nested.mkdir(parents=True)
+    (nested / "work.py").write_text("recent work")
+    _backdate_tree(clone)
+
+    # One nested file was touched just now; everything else is old.
+    (nested / "work.py").write_text("recent work, just saved")
+
+    result = remove_clone(clone)
+
+    assert result is False
+    assert clone.exists(), (
+        "remove_clone deleted a clone containing a recently modified file"
+    )
+
+
+def test_remove_clone_refuses_dirty_git_tree_regardless_of_age(tmp_path):
+    """Uncommitted changes are unsaved human/agent work — never delete them,
+    even when every mtime is old."""
+    import subprocess
+
+    clone = tmp_path / "pr-8"
+    clone.mkdir()
+    subprocess.run(["git", "init"], cwd=clone, check=True, capture_output=True)
+    (clone / "untracked-work.txt").write_text("not committed anywhere")
+    _backdate_tree(clone)
+
+    result = remove_clone(clone)
+
+    assert result is False
+    assert clone.exists(), (
+        "remove_clone deleted a clone with uncommitted changes"
     )
 
 
