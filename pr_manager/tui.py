@@ -398,7 +398,6 @@ class TuiPollHost:
 
 class PRManagerApp(App):
     TITLE = "PR Manager"
-    ENABLE_MOUSE_SUPPORT = False
 
     CSS = """
     #main-layout {

@@ -98,7 +98,10 @@ def _main() -> None:
             from .tui import PRManagerApp
             asyncio.run(state_manager.load())
             app = PRManagerApp(state_manager, args.poll_interval, args.recent_minutes)
-            app.run()
+            # mouse=False: leave the mouse to the terminal so text
+            # selection/copy works. (Setting ENABLE_MOUSE_SUPPORT on the
+            # App class, as an earlier attempt did, is not a Textual API.)
+            app.run(mouse=False)
             # Propagate textual's return_code so silent TUI failures surface
             # via the shell wrapper around the tmux session (see above).
             if app.return_code:
