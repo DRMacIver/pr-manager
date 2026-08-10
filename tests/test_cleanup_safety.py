@@ -163,7 +163,7 @@ async def test_cleanup_does_not_remove_clone_for_pr_missing_from_gh_list(
         patch.object(poll_module, "_sleep_between_polls", _stop_after_first_pass),
     ):
         try:
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
+            await poll_module.poll_loop(host, sm, poll_interval_minutes=5)
         except _Stop:
             pass
 
@@ -272,7 +272,7 @@ async def test_cleanup_error_for_one_pr_does_not_crash_poll_loop(
         patch.object(poll_module, "_sleep_between_polls", _stop_after_first_pass),
     ):
         try:
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
+            await poll_module.poll_loop(host, sm, poll_interval_minutes=5)
         except _Stop:
             pass
 

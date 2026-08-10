@@ -46,7 +46,6 @@ class HeadlessRunner:
 async def run_headless(
     state_manager: StateManager,
     poll_interval: int,
-    recent_minutes: int,
 ) -> None:
     host = HeadlessRunner()
-    await poll_loop(host, state_manager, poll_interval, recent_minutes)
+    await poll_loop(host, state_manager, poll_interval)

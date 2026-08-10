@@ -2,7 +2,7 @@
 
 A terminal UI for managing GitHub pull requests across multiple repos using Claude Code agents.
 
-**Fair warning:** This is a personal tool, vibecoded into existence over the course of a single conversation with Claude. It was built for a userbase of one (me). It will probably break for you. It may do unexpected things to your repos. It has no tests. Use at your own risk.
+**Fair warning:** This is a personal tool, vibecoded into existence in conversation with Claude. It was built for a userbase of one (me). It will probably break for you. It may do unexpected things to your repos. Use at your own risk.
 
 ## What it does
 
@@ -40,8 +40,8 @@ Everything runs inside tmux (auto-launched if needed) so you can have multiple C
 ## Setup
 
 ```sh
-git clone <this-repo>
-cd tooling
+git clone git@github.com:DRMacIver/pr-manager.git
+cd pr-manager
 uv sync
 ```
 
@@ -73,9 +73,11 @@ uv run pr-manager remove owner/repo
 | `n` | Create a new branch (prompts for repo + name, opens Claude) |
 | `o` | Open a terminal in the PR's working directory |
 | `v` | View agent log (tail -f in a new tmux window) |
-| `c` | Open an interactive Claude session (resumes if one exists) |
+| `c` | Open an interactive Claude session (resumes if one exists; stops a running fix first) |
 | `f` | Fix selected PR (opens tmux window running `pr-manager fix`) |
-| `s` | Settings (Claude permission mode) |
+| `y` | Copy selected PR's info to the clipboard (in the detail modal: copy the log) |
+| `/` | Toggle the chat assistant panel |
+| `s` | Settings (Claude permission mode, theme) |
 | `a` | Add a repo |
 | `r` | Remove a repo |
 | `x` | Remove selected local branch from the list |
@@ -85,15 +87,24 @@ uv run pr-manager remove owner/repo
 
 ```
 --poll-interval N   Polling interval in minutes (default: 5)
---recent-minutes N  Skip PRs with human commits in the last N minutes (default: 30)
 --headless          Log to stdout instead of running the TUI
 ```
+
+### Chat assistant
+
+`/` opens a chat panel with an AI assistant that can inspect and
+control the running TUI by executing Python against an internal API
+(list PRs, read agent logs, stop sessions, …). It calls the Anthropic
+API directly, so it needs an `ANTHROPIC_API_KEY` (or
+`ANTHROPIC_AUTH_TOKEN`) in the environment — the Claude Code login used
+for the PR agents does not cover it. Note that the assistant executes
+Python in the pr-manager process with no sandbox.
 
 ## How it works
 
 Each managed repo has a **pristine clone** that is fetched from GitHub once per poll cycle. Working clones for individual PRs and branches are created locally from the pristine (fast, no network), with their remote set back to GitHub for pushing.
 
-Claude agents run via the [Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/), with output streamed to per-PR log files. The tool tracks which commits it has authored so it can distinguish its own changes from human pushes and avoid interfering with active work.
+Claude agents run via the [Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/), with output streamed to per-PR log files. Commits authored by agents are recorded per PR (visible in the detail modal). Before any agent works on a PR, the working clone is reset to the remote branch, so agent work always starts from the PR's true state.
 
 State is persisted in `~/.local/share/pr-manager/state.json`.
 

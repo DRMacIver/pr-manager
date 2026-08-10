@@ -140,7 +140,8 @@ low-impact because observed status is re-derived every poll cycle.
 
 ## Testing
 
-The repo has no existing test suite. Verification is manual:
+(As of April 2026 the repo had no test suite; it does now — see
+`tests/`. The manual verification below reflects that time.)
 
 1. Start the TUI, confirm the PR list populates and status reflects the
    actual GitHub state (green/pending/failing/behind) without any agent

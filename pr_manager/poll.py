@@ -45,15 +45,9 @@ async def poll_loop(
     host: PollHost,
     state_manager: StateManager,
     poll_interval_minutes: int,
-    recent_minutes: int,
     nudge: Optional[asyncio.Event] = None,
 ) -> None:
-    """Status-only poll loop. Never writes to PRs.
-
-    `recent_minutes` is accepted for signature compatibility with the
-    previous auto-fix loop; it is unused.
-    """
-    del recent_minutes  # retained in signature for API stability
+    """Status-only poll loop. Never writes to PRs."""
     while True:
         # Clear before the pass, not after: a nudge that arrives while we
         # are polling means "state changed, poll again" and must survive

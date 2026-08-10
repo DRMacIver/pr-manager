@@ -10,8 +10,9 @@
 # Claude logins, shell history, tool caches, and so on. The Docker image
 # is shared across names. Default name is "main".
 #
-# Host SSH keys, gh CLI config, and gitconfig are copied into the home
-# volume on first start. Claude Code is installed in the image but not
+# Host SSH keys are re-copied into the home volume on every start; gh
+# CLI config and gitconfig only on first start (see
+# container/entrypoint.sh). Claude Code is installed in the image but not
 # logged in -- pr-manager detects this on first launch and opens a
 # "claude-login" tmux window where you authenticate.
 

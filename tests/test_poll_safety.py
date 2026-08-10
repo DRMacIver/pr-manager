@@ -70,7 +70,7 @@ async def test_gh_list_failure_cleans_up_nothing(state_path):
         patch.object(poll_module, "_sleep_between_polls", _stop_sleep),
     ):
         with pytest.raises(_Stop):
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
+            await poll_module.poll_loop(host, sm, poll_interval_minutes=5)
 
     assert removed == [], "a gh API failure must never trigger clone cleanup"
     assert await sm.get_pr_state("foo/bar", "42") is not None
@@ -92,7 +92,7 @@ async def test_status_refresh_preserves_fix_process_fields(state_path):
         patch.object(poll_module, "_sleep_between_polls", _stop_sleep),
     ):
         with pytest.raises(_Stop):
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
+            await poll_module.poll_loop(host, sm, poll_interval_minutes=5)
 
     pr = await sm.get_pr_state("foo/bar", "42")
     assert pr is not None
@@ -113,7 +113,7 @@ async def test_status_check_failure_marks_pr_error(state_path):
         patch.object(poll_module, "_sleep_between_polls", _stop_sleep),
     ):
         with pytest.raises(_Stop):
-            await poll_module.poll_loop(host, sm, poll_interval_minutes=5, recent_minutes=60)
+            await poll_module.poll_loop(host, sm, poll_interval_minutes=5)
 
     pr = await sm.get_pr_state("foo/bar", "42")
     assert pr is not None and pr.status == "error"
@@ -157,7 +157,7 @@ async def test_nudge_set_during_pass_triggers_immediate_repoll(state_path):
         with pytest.raises(_Stop):
             await asyncio.wait_for(
                 poll_module.poll_loop(
-                    host, sm, poll_interval_minutes=60, recent_minutes=60, nudge=nudge,
+                    host, sm, poll_interval_minutes=60, nudge=nudge,
                 ),
                 timeout=5,
             )

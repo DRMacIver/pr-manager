@@ -38,10 +38,6 @@ def _main() -> None:
 
     run_p = sub.add_parser("run", help="Start the TUI manager")
     run_p.add_argument(
-        "--recent-minutes", type=int, default=30, metavar="N",
-        help="Ignore PRs with human commits within the last N minutes (default: 30)",
-    )
-    run_p.add_argument(
         "--poll-interval", type=int, default=5, metavar="N",
         help="Polling interval in minutes (default: 5)",
     )
@@ -72,7 +68,7 @@ def _main() -> None:
         if args.headless:
             from .headless import run_headless
             asyncio.run(state_manager.load())
-            asyncio.run(run_headless(state_manager, args.poll_interval, args.recent_minutes))
+            asyncio.run(run_headless(state_manager, args.poll_interval))
         else:
             if not os.environ.get("TMUX"):
                 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -80,7 +76,6 @@ def _main() -> None:
                     "uv", "run", "--project", script_dir + "/..",
                     "pr-manager", "run",
                     "--poll-interval", str(args.poll_interval),
-                    "--recent-minutes", str(args.recent_minutes),
                 ]
                 inner_cmd = " ".join(shlex.quote(p) for p in inner_parts)
                 # If pr-manager exits non-zero (a crash, or `sys.exit(1)` from
@@ -101,7 +96,7 @@ def _main() -> None:
             ensure_logged_in()
             from .tui import PRManagerApp
             asyncio.run(state_manager.load())
-            app = PRManagerApp(state_manager, args.poll_interval, args.recent_minutes)
+            app = PRManagerApp(state_manager, args.poll_interval)
             # mouse=False: leave the mouse to the terminal so text
             # selection/copy works. (Setting ENABLE_MOUSE_SUPPORT on the
             # App class, as an earlier attempt did, is not a Textual API.)

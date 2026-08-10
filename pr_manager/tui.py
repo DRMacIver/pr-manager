@@ -487,12 +487,10 @@ class PRManagerApp(App):
         self,
         state_manager: StateManager,
         poll_interval: int,
-        recent_minutes: int,
     ) -> None:
         super().__init__()
         self._state_manager = state_manager
         self._poll_interval = poll_interval
-        self._recent_minutes = recent_minutes
         self._display_prs: list[PRDisplayInfo] = []
         self._active_tasks: dict[tuple[str, int], asyncio.Task] = {}
         # Which tmux window each sentinel in _active_tasks watches.
@@ -529,7 +527,7 @@ class PRManagerApp(App):
         self._status_column_key = column_keys[3]
         host = TuiPollHost(self)
         self._poll_task = asyncio.create_task(
-            poll_loop(host, self._state_manager, self._poll_interval, self._recent_minutes,
+            poll_loop(host, self._state_manager, self._poll_interval,
                       nudge=self._poll_nudge)
         )
         self.set_interval(0.12, self._tick_spinner)

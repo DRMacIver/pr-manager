@@ -19,7 +19,7 @@ from pr_manager.tui import PRManagerApp
 def _mk_app() -> PRManagerApp:
     sm = MagicMock()
     sm.get_settings = AsyncMock(return_value=Settings())
-    return PRManagerApp(sm, poll_interval=5, recent_minutes=30)
+    return PRManagerApp(sm, poll_interval=5)
 
 
 def _pr(number: int) -> PRDisplayInfo:

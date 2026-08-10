@@ -22,7 +22,7 @@ KEY = ("foo/bar", 42)
 
 
 def _app() -> PRManagerApp:
-    return PRManagerApp(MagicMock(), poll_interval=5, recent_minutes=30)
+    return PRManagerApp(MagicMock(), poll_interval=5)
 
 
 @pytest.fixture

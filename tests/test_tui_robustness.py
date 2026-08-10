@@ -21,7 +21,7 @@ def _pr(number: int = 42, branch: str = "feat") -> PRDisplayInfo:
 def _mk_app() -> PRManagerApp:
     sm = MagicMock()
     sm.get_settings = AsyncMock(return_value=Settings())
-    return PRManagerApp(sm, poll_interval=5, recent_minutes=30)
+    return PRManagerApp(sm, poll_interval=5)
 
 
 # ── browser opening ──────────────────────────────────────────────────────────

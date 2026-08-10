@@ -60,7 +60,7 @@ async def test_nudge_event_interrupts_poll_sleep(state_path):
         # arrives in <1s.  If not, the 2-second timeout catches it.
         task = asyncio.create_task(
             poll_module.poll_loop(
-                host, sm, poll_interval_minutes=60, recent_minutes=60,
+                host, sm, poll_interval_minutes=60,
                 nudge=nudge,
             )
         )

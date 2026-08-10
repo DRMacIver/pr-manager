@@ -1,5 +1,11 @@
 # Explicit PR-fix command — Implementation Plan
 
+> **Status: completed (historical).** This plan was fully executed in
+> April 2026: the poll loop is status-only, `PRProcessor` is gone, and
+> the `f` binding exists. File names below (e.g. `pr_manager/processor.py`,
+> `tests/test_disable_pr.py`) refer to the codebase as it was then and
+> no longer exist. Kept for historical context only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the poll loop's auto-fix decision logic with an explicit user-invoked fix command, invokable via CLI (`pr-manager fix <url>`, already exists) or a new TUI `f` binding that opens the CLI in a tmux window.
