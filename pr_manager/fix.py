@@ -19,6 +19,7 @@ from .git import (
     git_push_force_with_lease,
     git_reattribute_and_push,
     git_setup_pr_clone,
+    git_sync_branch_to_origin,
     git_update_pristine,
     run_cmd,
 )
@@ -88,6 +89,14 @@ async def run_fix(url: str, poll_interval: int = 60) -> None:
     await state_manager.upsert_pr_state(repo, str(pr_number), pr_state)
 
     while True:
+        # 0. Adopt the remote's state. Humans may have pushed since the
+        # last iteration; working from a stale local branch would end in
+        # force-pushing their commits away.
+        synced = await git_sync_branch_to_origin(clone_path, branch)
+        if not synced:
+            _log(f"origin/{branch} no longer exists — exiting", "error")
+            sys.exit(1)
+
         # 1. Rebase if behind target.
         behind = await git_commits_behind(clone_path, branch, target_branch)
         if behind > 0:

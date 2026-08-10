@@ -38,6 +38,7 @@ async def test_error_check_status_waits_instead_of_fixing():
         patch.object(fix_module, "_fetch_pr_data", AsyncMock(return_value=_pr_data())),
         patch.object(fix_module, "git_update_pristine", AsyncMock()),
         patch.object(fix_module, "git_setup_pr_clone", AsyncMock()),
+        patch.object(fix_module, "git_sync_branch_to_origin", AsyncMock(return_value=True)),
         patch.object(fix_module, "git_commits_behind", AsyncMock(return_value=0)),
         patch.object(
             fix_module,

@@ -154,6 +154,30 @@ async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
     await run_cmd(["git", "checkout", branch], cwd=clone_path)
 
 
+async def git_sync_branch_to_origin(clone_path: Path, branch: str) -> bool:
+    """Make the local branch exactly match origin/<branch>.
+
+    The remote is the source of truth: anything local-only (stale state
+    from an earlier run, leftovers of a crashed agent) is discarded.
+    Without this, an agent can rebase a stale local branch and — because
+    the loop fetches first, re-arming the force-with-lease lease —
+    force-push commits that humans pushed in the meantime out of
+    existence.
+
+    Returns False when origin/<branch> no longer exists.
+    """
+    await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path)
+    rc, _, _ = await run_cmd(
+        ["git", "rev-parse", "--verify", f"origin/{branch}"],
+        cwd=clone_path, check=False,
+    )
+    if rc != 0:
+        return False
+    await run_cmd(["git", "checkout", branch], cwd=clone_path)
+    await run_cmd(["git", "reset", "--hard", f"origin/{branch}"], cwd=clone_path)
+    return True
+
+
 async def git_default_branch(clone_path: Path) -> str:
     """Return the default branch name for origin ('main' or 'master')."""
     rc, _, _ = await run_cmd(
