@@ -105,7 +105,7 @@ Python in the pr-manager process with no sandbox.
 
 Each managed repo has a **pristine clone** that is fetched from GitHub once per poll cycle. Working clones for individual PRs and branches are created locally from the pristine (fast, no network), with their remote set back to GitHub for pushing.
 
-Claude agents run via the [Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/), with output streamed to per-PR log files. Commits authored by agents are recorded per PR (visible in the detail modal). Before any agent works on a PR, the working clone is reset to the remote branch, so agent work always starts from the PR's true state.
+Claude agents run via the [Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/), with output streamed to per-PR log files. Commits authored by agents are recorded per PR (visible in the detail modal). Before any agent works on a PR, the working clone is reset to the remote branch, so agent work always starts from the PR's true state; leftover uncommitted changes from interrupted runs are stashed automatically (preserved, never destroyed) rather than blocking the fix.
 
 State is persisted in `~/.local/share/pr-manager/state.json`.
 

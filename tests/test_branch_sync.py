@@ -94,21 +94,48 @@ async def test_sync_discards_stale_local_commits(git_remote_and_clone):
 
 
 @pytest.mark.asyncio
-async def test_sync_refuses_to_touch_a_dirty_tree(git_remote_and_clone):
-    """Uncommitted changes mean a human (or interactive session) is
-    working in this tree — the PR clone can be a symlink into the user's
-    branch clone. reset --hard must never eat that work."""
+async def test_sync_stashes_leftover_changes_and_proceeds(git_remote_and_clone):
+    """The fix loop runs on pr-manager's internal checkouts: leftover
+    uncommitted changes (e.g. from an interrupted agent run) are the
+    system's problem, not the user's. They're stashed — preserved, never
+    destroyed — and the sync proceeds unattended."""
     origin, clone = git_remote_and_clone
-    (clone / "feat.txt").write_text("uncommitted human edit")
+    remote_sha = _git(clone, "rev-parse", "HEAD")
+    (clone / "feat.txt").write_text("leftover agent edit")
+    (clone / "new-file.txt").write_text("untracked leftover")
 
-    with pytest.raises(DirtyWorkingTreeError):
-        await git_sync_branch_to_origin(clone, "feature")
+    synced = await git_sync_branch_to_origin(clone, "feature")
 
-    assert (clone / "feat.txt").read_text() == "uncommitted human edit"
+    assert synced is True
+    assert _git(clone, "rev-parse", "HEAD") == remote_sha
+    assert _git(clone, "status", "--porcelain") == "", "tree must end up clean"
+    stash_list = _git(clone, "stash", "list")
+    assert "pr-manager" in stash_list, "leftovers must be preserved in a stash"
+    # Both the tracked edit and the untracked file are in the stash.
+    stash_files = _git(clone, "stash", "show", "--include-untracked", "--name-only")
+    assert "feat.txt" in stash_files
+    assert "new-file.txt" in stash_files
 
 
 @pytest.mark.asyncio
-async def test_fix_loop_exits_cleanly_on_dirty_tree():
+async def test_sync_raises_only_when_the_stash_itself_fails(tmp_path, monkeypatch):
+    """If the leftovers can't be preserved, refuse rather than reset."""
+    from pr_manager import git as git_module
+
+    monkeypatch.setattr(git_module, "_has_uncommitted_changes", lambda p: True)
+
+    async def failing_stash(args, cwd=None, check=True, timeout=None):
+        assert args[:2] == ["git", "stash"], f"unexpected command: {args}"
+        return 1, "", "stash failed"
+
+    monkeypatch.setattr(git_module, "run_cmd", failing_stash)
+
+    with pytest.raises(DirtyWorkingTreeError):
+        await git_sync_branch_to_origin(tmp_path, "feature")
+
+
+@pytest.mark.asyncio
+async def test_fix_loop_exits_cleanly_when_leftovers_cannot_be_preserved():
     with (
         patch.object(fix_module, "_fetch_pr_data", AsyncMock(return_value={
             "number": 42, "title": "t", "headRefName": "feature",

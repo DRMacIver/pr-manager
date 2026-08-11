@@ -113,11 +113,10 @@ async def run_fix(url: str, poll_interval: int = 60) -> None:
         # force-pushing their commits away.
         try:
             synced = await git_sync_branch_to_origin(clone_path, branch)
-        except DirtyWorkingTreeError:
+        except DirtyWorkingTreeError as e:
             _log(
-                "Working clone has uncommitted changes (an interactive "
-                "session?) — refusing to reset it. Commit/stash the "
-                "changes or close the session, then rerun fix.",
+                f"Could not preserve leftover changes in the working "
+                f"clone ({e}) — refusing to reset over them.",
                 "error",
             )
             sys.exit(1)

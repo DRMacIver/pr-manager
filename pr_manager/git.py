@@ -179,7 +179,7 @@ async def git_setup_pr_clone(repo: str, pr_number: int, branch: str) -> None:
 
 
 class DirtyWorkingTreeError(RuntimeError):
-    """The working tree has uncommitted changes we refuse to destroy."""
+    """Uncommitted changes exist that could not be preserved (stashed)."""
 
 
 async def git_sync_branch_to_origin(clone_path: Path, branch: str) -> bool:
@@ -192,16 +192,29 @@ async def git_sync_branch_to_origin(clone_path: Path, branch: str) -> bool:
     force-push commits that humans pushed in the meantime out of
     existence.
 
-    Uncommitted changes are a different matter: the clone may be a
-    symlink into the user's branch clone with an interactive session in
-    it, and reset --hard would silently eat their edits — so a dirty
-    tree raises DirtyWorkingTreeError instead.
+    Uncommitted changes (typically leftovers from an interrupted agent
+    run) are stashed rather than destroyed — these are pr-manager's
+    internal checkouts, so resolving them is the system's job, not the
+    user's; the stash keeps them recoverable. Only if the stash itself
+    fails does this raise DirtyWorkingTreeError instead of resetting.
 
     Returns False when origin/<branch> no longer exists.
     """
     if await asyncio.to_thread(_has_uncommitted_changes, clone_path):
-        raise DirtyWorkingTreeError(
-            f"{clone_path} has uncommitted changes — refusing to reset"
+        rc, _, stderr = await run_cmd(
+            ["git", "stash", "push", "--include-untracked",
+             "-m", "pr-manager: leftover changes from an interrupted run"],
+            cwd=clone_path, check=False,
+        )
+        if rc != 0 or await asyncio.to_thread(_has_uncommitted_changes, clone_path):
+            raise DirtyWorkingTreeError(
+                f"{clone_path} has uncommitted changes that could not be "
+                f"stashed ({stderr.strip() or 'tree still dirty'}) — "
+                "refusing to reset"
+            )
+        log.warning(
+            "Stashed leftover uncommitted changes in %s (recover with "
+            "`git stash pop` if ever needed)", clone_path,
         )
     await run_cmd(["git", "fetch", "origin", "--prune"], cwd=clone_path)
     rc, _, _ = await run_cmd(
