@@ -22,6 +22,8 @@ class PRState:
     session_id: Optional[str] = None
     our_commits: list[str] = field(default_factory=list)
     status: str = "idle"
+    # User chose to hide this (still-open) PR from the listing.
+    hidden: bool = False
     last_checked: Optional[str] = None
     error_message: Optional[str] = None
     title: str = ""
@@ -76,6 +78,7 @@ class PRDisplayInfo:
     error_message: Optional[str]
     review_status: str = ""
     activity: str = ""
+    hidden: bool = False
 
 
 _PR_STATE_FIELDS = set(PRState.__dataclass_fields__)
@@ -233,6 +236,14 @@ class StateManager:
             existing = set(pr_dict.get("our_commits", []))
             existing.update(shas)
             pr_dict["our_commits"] = list(existing)
+
+        await self._transact(mutate, write=True)
+
+    async def set_pr_hidden(self, repo: str, pr_number: str, hidden: bool) -> None:
+        def mutate(st: AppState) -> None:
+            pr = st.pr_state.get(repo, {}).get(str(pr_number))
+            if pr is not None:
+                pr["hidden"] = hidden
 
         await self._transact(mutate, write=True)
 

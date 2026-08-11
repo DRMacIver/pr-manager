@@ -479,7 +479,8 @@ class PRManagerApp(App):
         Binding("s", "settings", "settings"),
         Binding("a", "add_repo", "add repo"),
         Binding("r", "remove_repo", "remove repo"),
-        Binding("x", "toggle_disabled", "remove local branch"),
+        Binding("x", "toggle_disabled", "hide PR / remove branch"),
+        Binding("h", "toggle_show_hidden", "show hidden"),
         Binding("q", "quit", "quit"),
     ]
 
@@ -492,6 +493,10 @@ class PRManagerApp(App):
         self._state_manager = state_manager
         self._poll_interval = poll_interval
         self._display_prs: list[PRDisplayInfo] = []
+        # The rows actually shown, after hidden-PR filtering; selection
+        # indexes into this list, not _display_prs.
+        self._visible_prs: list[PRDisplayInfo] = []
+        self._show_hidden = False
         self._active_tasks: dict[tuple[str, int], asyncio.Task] = {}
         # Which tmux window each sentinel in _active_tasks watches.
         self._session_windows: dict[tuple[str, int], str] = {}
@@ -591,7 +596,7 @@ class PRManagerApp(App):
             return
         self._spinner_idx = (self._spinner_idx + 1) % len(SPINNER_CHARS)
         table = self.query_one(DataTable)
-        for pr in self._display_prs:
+        for pr in self._visible_prs:
             if (pr.repo, pr.number) not in active:
                 continue
             row_key = f"{pr.repo}:{pr.number or pr.branch}"
@@ -633,25 +638,31 @@ class PRManagerApp(App):
         table = self.query_one(DataTable)
         saved_row = table.cursor_row
         table.clear()
-        for pr in self._display_prs:
+        self._visible_prs = [
+            pr for pr in self._display_prs
+            if self._show_hidden or not pr.hidden
+        ]
+        for pr in self._visible_prs:
             key = (pr.repo, pr.number)
             task = self._active_tasks.get(key)
             is_fixing = bool(task and not task.done())
             status = "fixing" if is_fixing else pr.status
             is_active = is_fixing
+            dim = "dim" if pr.hidden else ""
             table.add_row(
-                str(pr.number) if pr.number else "—",
-                pr.repo,
-                pr.branch,
-                self._format_status(status, is_active),
+                Text(str(pr.number) if pr.number else "—", style=dim),
+                Text(pr.repo, style=dim),
+                Text(pr.branch, style=dim),
+                Text("∅ hidden", style="dim") if pr.hidden
+                else self._format_status(status, is_active),
                 self._format_review(pr.review_status),
                 pr.activity,
                 pr.age,
                 key=f"{pr.repo}:{pr.number or pr.branch}",
             )
         try:
-            if self._display_prs:
-                table.move_cursor(row=min(saved_row, len(self._display_prs) - 1))
+            if self._visible_prs:
+                table.move_cursor(row=min(saved_row, len(self._visible_prs) - 1))
         except Exception:
             pass
 
@@ -691,8 +702,8 @@ class PRManagerApp(App):
     def _get_selected_pr(self) -> Optional[PRDisplayInfo]:
         table = self.query_one(DataTable)
         row = table.cursor_row
-        if 0 <= row < len(self._display_prs):
-            return self._display_prs[row]
+        if 0 <= row < len(self._visible_prs):
+            return self._visible_prs[row]
         return None
 
     async def _find_session_for_worktree(self, worktree: Path) -> Optional[str]:
@@ -944,19 +955,44 @@ class PRManagerApp(App):
         self._refresh_table()
         self.post_message(AppLogMessage(f"Removed repo: {pr.repo}", "info"))
 
-    async def action_toggle_disabled(self) -> None:
-        """`x` binding: remove a local branch from the list.
+    def action_toggle_show_hidden(self) -> None:
+        """`h` binding: toggle whether hidden PRs appear (dimmed)."""
+        self._show_hidden = not self._show_hidden
+        self._refresh_table()
+        hidden_count = sum(1 for p in self._display_prs if p.hidden)
+        if self._show_hidden:
+            self.post_message(AppLogMessage(
+                f"Showing {hidden_count} hidden PR(s) — press x on one to unhide",
+                "info",
+            ))
+        else:
+            self.post_message(AppLogMessage("Hidden PRs concealed again", "info"))
 
-        Has no effect on rows for real PRs — auto-fix is explicit now.
-        """
+    async def action_toggle_disabled(self) -> None:
+        """`x` binding: hide/unhide a PR from the listing, or remove a
+        local branch."""
         pr = self._get_selected_pr()
         if not pr:
             self.post_message(AppLogMessage("No PR selected", "warn"))
             return
         if pr.number != 0:
-            self.post_message(AppLogMessage(
-                "`x` only removes local branches; use `f` to fix a PR", "info",
-            ))
+            newly_hidden = not pr.hidden
+            await self._state_manager.set_pr_hidden(
+                pr.repo, str(pr.number), newly_hidden,
+            )
+            pr.hidden = newly_hidden
+            self._refresh_table()
+            if newly_hidden:
+                self.post_message(AppLogMessage(
+                    f"Hid PR #{pr.number} ({pr.repo}) — press h to view hidden PRs",
+                    "info",
+                ))
+            else:
+                # Its status hasn't been refreshed while hidden.
+                self._poll_nudge.set()
+                self.post_message(AppLogMessage(
+                    f"Unhid PR #{pr.number} ({pr.repo})", "info",
+                ))
             return
         await self._state_manager.remove_local_branch(pr.repo, pr.branch)
         self._display_prs = [

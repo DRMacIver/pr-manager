@@ -71,6 +71,7 @@ async def build_display_list(
                 error_message=pr_state.error_message,
                 review_status=format_review_status(pr_state),
                 activity=format_activity(pr_state),
+                hidden=pr_state.hidden,
             ))
         # Include local branches (no PR yet).
         for branch in await state_manager.get_local_branches(repo):

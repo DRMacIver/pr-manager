@@ -38,6 +38,8 @@ class HeadlessRunner:
             review = f" [{pr.review_status}]" if pr.review_status else ""
             activity = f" ({pr.activity})" if pr.activity else ""
             line = f"  {icon} #{pr.number:>4}  {pr.repo:<30} {pr.branch:<35} {pr.status}{review}{activity}"
+            if pr.hidden:
+                line += "  (hidden)"
             if pr.error_message:
                 line += f"  ERR: {pr.error_message}"
             print(line, flush=True)

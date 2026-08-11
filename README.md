@@ -80,7 +80,8 @@ uv run pr-manager remove owner/repo
 | `s` | Settings (Claude permission mode, theme) |
 | `a` | Add a repo |
 | `r` | Remove a repo |
-| `x` | Remove selected local branch from the list |
+| `x` | Hide selected PR from the listing (or remove a local branch); `x` again unhides |
+| `h` | Toggle showing hidden PRs (dimmed) |
 | `q` | Quit |
 
 ### Options

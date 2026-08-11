@@ -117,6 +117,12 @@ async def poll_loop(
                     # Per-PR status refresh.
                     for pr_data in prs:
                         pn = str(pr_data["number"])
+                        existing = await state_manager.get_pr_state(repo, pn)
+                        if existing is not None and existing.hidden:
+                            # Hidden PRs get no clone/fetch work; their
+                            # state stays for cleanup-on-close, and
+                            # unhiding nudges a fresh poll.
+                            continue
                         try:
                             await git_setup_pr_clone(repo, int(pn), pr_data["headRefName"])
                             clone = get_clone_path(repo, int(pn))
