@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from .constants import STATUS_STYLE
+from .display import build_display_list
 from .poll import poll_loop
 from .state import PRDisplayInfo, StateManager
 
@@ -50,4 +51,8 @@ async def run_headless(
     poll_interval: int,
 ) -> None:
     host = HeadlessRunner()
+    # Print the last-known state immediately; the poll refreshes it.
+    host.on_pr_list(await build_display_list(
+        await state_manager.get_repos(), state_manager,
+    ))
     await poll_loop(host, state_manager, poll_interval)

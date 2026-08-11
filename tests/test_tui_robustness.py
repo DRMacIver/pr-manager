@@ -8,7 +8,7 @@ import pytest
 
 from pr_manager import tui as tui_module
 from pr_manager.state import PRDisplayInfo, Settings
-from pr_manager.tui import PRManagerApp, log_path_for, watch_tmux_window
+from pr_manager.tui import log_path_for, watch_tmux_window
 
 
 def _pr(number: int = 42, branch: str = "feat") -> PRDisplayInfo:
@@ -18,10 +18,7 @@ def _pr(number: int = 42, branch: str = "feat") -> PRDisplayInfo:
     )
 
 
-def _mk_app() -> PRManagerApp:
-    sm = MagicMock()
-    sm.get_settings = AsyncMock(return_value=Settings())
-    return PRManagerApp(sm, poll_interval=5)
+from .tui_helpers import mk_app as _mk_app
 
 
 # ── browser opening ──────────────────────────────────────────────────────────

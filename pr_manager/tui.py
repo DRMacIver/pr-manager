@@ -29,6 +29,7 @@ from .git import (
     git_update_pristine,
     run_cmd,
 )
+from .display import build_display_list
 from .poll import poll_loop
 from .state import CLAUDE_PERMISSION_MODES, PRDisplayInfo, PRState, Settings, StateManager
 
@@ -534,6 +535,17 @@ class PRManagerApp(App):
             "PR#", "Repo", "Branch", "Status", "Review", "Activity", "Age",
         )
         self._status_column_key = column_keys[3]
+        # Paint the last-known state immediately — the first poll pass is
+        # network-bound and can take a long time; rows refresh in place
+        # as fresh data arrives.
+        self._display_prs = await build_display_list(
+            await self._state_manager.get_repos(), self._state_manager,
+        )
+        self._refresh_table()
+        if self._display_prs:
+            self.post_message(AppLogMessage(
+                "Showing last-known state — refreshing…", "info",
+            ))
         host = TuiPollHost(self)
         self._poll_task = asyncio.create_task(
             poll_loop(host, self._state_manager, self._poll_interval,

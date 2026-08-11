@@ -7,19 +7,15 @@ active session — burning CPU and resetting the scroll position.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from pr_manager import tui as tui_module
-from pr_manager.state import PRDisplayInfo, Settings
-from pr_manager.tui import PRManagerApp
+from pr_manager.state import PRDisplayInfo
 
 
-def _mk_app() -> PRManagerApp:
-    sm = MagicMock()
-    sm.get_settings = AsyncMock(return_value=Settings())
-    return PRManagerApp(sm, poll_interval=5)
+from .tui_helpers import mk_app as _mk_app
 
 
 def _pr(number: int) -> PRDisplayInfo:

@@ -16,13 +16,11 @@ import pytest
 
 from pr_manager import tui as tui_module
 from pr_manager.assistant_api import AssistantContext
-from pr_manager.tui import PRManagerApp
 
 KEY = ("foo/bar", 42)
 
 
-def _app() -> PRManagerApp:
-    return PRManagerApp(MagicMock(), poll_interval=5)
+from .tui_helpers import mk_app as _app
 
 
 @pytest.fixture
@@ -103,15 +101,11 @@ async def test_sentinel_completion_repaints_and_nudges_the_poll(monkeypatch):
     """When a session ends, the row must not stay frozen on 'fixing'
     until the next multi-minute poll: the table repaints immediately and
     the poll loop is nudged for a fresh status."""
-    from pr_manager.state import Settings
-
     async def instant_watch(window_name):
         return
 
     monkeypatch.setattr(tui_module, "watch_tmux_window", instant_watch)
-    sm = MagicMock()
-    sm.get_settings = AsyncMock(return_value=Settings())
-    app = PRManagerApp(sm, poll_interval=5)
+    app = _app()
     refreshes: list[int] = []
 
     with patch.object(tui_module, "poll_loop", AsyncMock()):
