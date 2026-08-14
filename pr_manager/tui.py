@@ -133,6 +133,9 @@ class NewBranchScreen(DismissOnEscapeScreen):
         background: $surface;
     }
     #nb-dialog Input { margin-bottom: 1; }
+    /* Horizontal defaults to height: 1fr, which inside this auto-height
+       dialog expands to fill the whole screen. */
+    #nb-buttons { height: auto; }
     #nb-buttons Button { margin-right: 1; }
     """
 
@@ -156,6 +159,8 @@ class NewBranchScreen(DismissOnEscapeScreen):
                 yield Button("Cancel", id="nb-cancel")
 
     @on(Button.Pressed, "#nb-create")
+    @on(Input.Submitted, "#nb-repo")
+    @on(Input.Submitted, "#nb-branch")
     async def _create(self) -> None:
         # The clone can take a while; without this guard a second press
         # started a concurrent clone into the same path.
@@ -219,6 +224,9 @@ class AddRepoScreen(DismissOnEscapeScreen):
     }
     #dialog Label { margin-bottom: 1; }
     #dialog Input { margin-bottom: 1; }
+    /* Horizontal defaults to height: 1fr, which inside this auto-height
+       dialog expands to fill the whole screen. */
+    #buttons { height: auto; }
     #buttons Button { margin-right: 1; }
     """
 
@@ -234,6 +242,7 @@ class AddRepoScreen(DismissOnEscapeScreen):
                 yield Button("Cancel", id="cancel-btn")
 
     @on(Button.Pressed, "#add-btn")
+    @on(Input.Submitted, "#repo-input")
     async def _add(self) -> None:
         repo = self.query_one("#repo-input", Input).value.strip()
         if "/" in repo:
